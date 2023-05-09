@@ -37,7 +37,7 @@ pub struct Serve {
     #[clap(long = "source", default_value = "0")]
     source_address: penumbra_crypto::keys::AddressIndex,
     /// The websockets address to access the Binance API on.
-    #[clap(long = "binance_ws", default_value = "wss://stream.binance.us:9443/ws")]
+    #[clap(long = "binance_ws", default_value = "wss://stream.binance.us:9443")]
     binance_ws: Url,
     /// The HTTP address to access the Binance REST API on.
     #[clap(long = "binance_rest", default_value = "https://api.binance.us")]
@@ -59,17 +59,23 @@ impl Serve {
             .collect::<Vec<_>>();
 
         let mut symbols = Vec::new();
-        // Latest price for ONE symbol
-        let market: Market = Binance::new_with_config(
-            None,
-            None,
-            &Config {
-                rest_api_endpoint: "https://api.binance.us".into(),
-                // ws_endpoint: "wss://stream.binance.us:9443/ws".into(),
-                ws_endpoint: "wss://stream.binance.us:9443".into(),
-                ..Default::default()
-            },
-        );
+
+        // the binance-rs library really hates trailing slashes here
+        let mut binance_rest = String::from(self.binance_rest);
+        if binance_rest.ends_with("/") {
+            binance_rest.pop();
+        }
+        let mut binance_ws = String::from(self.binance_ws);
+        if binance_ws.ends_with("/") {
+            binance_ws.pop();
+        }
+        let binance_config = Config {
+            rest_api_endpoint: binance_rest,
+            ws_endpoint: binance_ws,
+            ..Default::default()
+        };
+
+        let market: Market = Binance::new_with_config(None, None, &binance_config);
 
         // Find the permutations that Binance knows about.
         for permutation in permutations {
@@ -132,7 +138,7 @@ impl Serve {
         let (quotes_sender, trader) = Trader::new(0, fvk, view, custody, symbols.clone());
 
         // Instantiate the Binance fetcher (responsible for fetching binance API data and sending along to the trader)
-        let binance_fetcher = BinanceFetcher::new(quotes_sender, symbols);
+        let binance_fetcher = BinanceFetcher::new(quotes_sender, symbols, binance_config);
 
         // Start the binance fetcher (responsible for fetching binance API data and sending along
         // the watch channel) and the trader (responsible for receiving quotes along the watch channel

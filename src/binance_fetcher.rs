@@ -25,17 +25,21 @@ pub struct BinanceFetcher {
     last_sent: BTreeMap<String, BookTickerEvent>,
     /// The symbols we are fetching.
     symbols: Vec<String>,
+    /// The configuration for the Binance API client
+    binance_config: Config,
 }
 
 impl BinanceFetcher {
     pub fn new(
         txs: BTreeMap<String, Sender<Option<BookTickerEvent>>>,
         symbols: Vec<String>,
+        binance_config: Config,
     ) -> Self {
         Self {
             txs,
             last_sent: BTreeMap::new(),
             symbols,
+            binance_config,
         }
     }
 
@@ -83,12 +87,7 @@ impl BinanceFetcher {
         web_socket
             .connect_with_config(
                 &format!("stream?streams={}", &endpoints.join("/")),
-                &Config {
-                    rest_api_endpoint: "https://api.binance.us".into(),
-                    // ws_endpoint: "wss://stream.binance.us:9443/ws".into(),
-                    ws_endpoint: "wss://stream.binance.us:9443".into(),
-                    ..Default::default()
-                },
+                &self.binance_config,
             )
             .unwrap(); // check error
         if let Err(e) = web_socket.event_loop(&keep_running) {
