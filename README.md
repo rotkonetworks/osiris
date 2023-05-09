@@ -83,3 +83,13 @@ sudo journalctl -af -u osiris
 ```
 
 These steps should be performed on release day, immediately after publishing the tag.
+
+# License
+
+By contributing to Osiris you agree that your contributions will be licensed
+under the terms of both the [LICENSE-Apache](LICENSE-Apache) and the
+[LICENSE-MIT](LICENSE-MIT) files in the root of this source tree.
+
+If you're using Osiris you are free to choose one of the provided licenses.
+
+`SPDX-License-Identifier: MIT OR Apache-2.0`
