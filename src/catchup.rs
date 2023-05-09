@@ -7,7 +7,7 @@ use serenity::{
     http::Http,
     model::id::{ChannelId, MessageId, UserId},
 };
-use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tracing::instrument;
 
 use crate::{

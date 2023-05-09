@@ -1,8 +1,11 @@
-# Osiris: a trading bot for the Penumbra shielded DEX 🛰
+# Osiris: a trading bot for the Penumbra shielded DEX 💹
 
 [Osiris](https://en.wikipedia.org/wiki/OSIRIS-REx) is used for supplying liquidity to Penumbra testnets
 by replicating market prices from the Binance public API. Osiris also serves as an example for how
 a simple trading bot can be built against the Penumbra DEX.
+
+This bot is the Alameda Research of Penumbra. It performs no risk management, portfolio rebalancing, or any other
+best practices and only submits trades. Please use it only as a reference.
 
 It does not duplicate command-line wallet management; rather, it shares a wallet by default with the
 location of the wallet managed by the `pcli` command line Penumbra wallet. To set up Osiris, first
@@ -20,7 +23,7 @@ See [GH29](https://github.com/penumbra-zone/galileo/issues/29) for details.
 ## Running it
 
 ```bash
-RUST_LOG=osiris=info BINANCE_API_TOKEN=<YOUR BINANCE API TOKEN HERE> cargo run --release serve ETH BTC USD ATOM OSMO
+RUST_LOG=osiris=info cargo run --release serve ETH BTC USD ATOM OSMO
 ```
 
 This will monitor the [Binance websockets API](https://developers.binance.com/docs/binance-trading-api/websocket_api) for
@@ -29,9 +32,6 @@ current market prices between all pairings of the assets provided on the CLI.
 Based on current market prices, Osiris will use as much of its available liquidity as possible to provide positions
 replicating Binance's market conditions within the Penumbra shielded DEX, using the positions' spread parameter to
 represent the bid/ask spread from the market feed.
-
-Note that you must specify the bot's Binance API token using the `BINANCE_API_TOKEN` environment
-variable in order to authenticate with Binance.
 
 On first synchronization, the wallet must be caught up to speed with the state of the chain, which
 can take some time; the `info`-level log output will inform you when the bot is ready.
