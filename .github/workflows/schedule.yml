@@ -1,4 +1,4 @@
-name: Check Galileo versus latest penumbra
+name: Check Osiris versus latest penumbra
 on: 
   schedule:
     - cron: "15 18 * * *"
@@ -8,10 +8,10 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout galileo
+      - name: Checkout osiris
         uses: actions/checkout@v2
         with:
-          path: galileo
+          path: osiris
 
       - name: Check out penumbra repo
         uses: actions/checkout@v2
@@ -29,10 +29,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            galileo
+            osiris
             penumbra
 
       - name: cargo fmt
         run:
           cargo fmt --all -- --check
-        working-directory: galileo
+        working-directory: osiris

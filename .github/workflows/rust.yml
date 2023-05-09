@@ -6,10 +6,10 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout galileo
+      - name: Checkout osiris
         uses: actions/checkout@v2
         with:
-          path: galileo
+          path: osiris
 
       - name: Check out penumbra repo
         uses: actions/checkout@v2
@@ -27,7 +27,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            galileo
+            osiris
             penumbra
 
       # We cannot use the GH action because it doesn't working directory:
@@ -36,16 +36,16 @@ jobs:
       - name: cargo check
         run:
           cargo check
-        working-directory: galileo
+        working-directory: osiris
 
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout galileo
+      - name: Checkout osiris
         uses: actions/checkout@v2
         with:
-          path: galileo
+          path: osiris
 
       - name: Check out penumbra repo
         uses: actions/checkout@v2
@@ -63,10 +63,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            galileo
+            osiris
             penumbra
 
       - name: cargo fmt
         run:
           cargo fmt --all -- --check
-        working-directory: galileo
+        working-directory: osiris
