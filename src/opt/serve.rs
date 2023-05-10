@@ -2,8 +2,7 @@ use anyhow::Context;
 use binance::{api::Binance, config::Config, market::*};
 use clap::Parser;
 use directories::ProjectDirs;
-use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
-use penumbra_crypto::{Value, Zero};
+use futures::TryStreamExt;
 use penumbra_custody::soft_kms::SoftKms;
 use penumbra_proto::{
     custody::v1alpha1::{
@@ -16,7 +15,7 @@ use penumbra_proto::{
     },
 };
 use penumbra_view::{ViewClient, ViewService};
-use std::{env, path::PathBuf, time::Duration};
+use std::path::PathBuf;
 use url::Url;
 
 use crate::{BinanceFetcher, Trader, Wallet};
@@ -94,7 +93,6 @@ impl Serve {
         });
         std::fs::create_dir_all(&data_dir).context("can create data dir")?;
 
-        let view_file = data_dir.clone().join("pcli-view.sqlite");
         let custody_file = data_dir.clone().join("custody.json");
 
         // Build a custody service...
@@ -107,17 +105,9 @@ impl Serve {
         let fvk = wallet.spend_key.full_viewing_key().clone();
 
         // Instantiate an in-memory view service.
-        let view_storage = penumbra_view::Storage::load_or_initialize(
-            Some(
-                view_file
-                    .to_str()
-                    .ok_or_else(|| anyhow::anyhow!("Non-UTF8 view path"))?
-                    .to_string(),
-            ),
-            &fvk,
-            self.node.clone(),
-        )
-        .await?;
+        let view_storage =
+            penumbra_view::Storage::load_or_initialize(None::<&str>, &fvk, self.node.clone())
+                .await?;
         let view_service = ViewService::new(view_storage, self.node.clone()).await?;
 
         // Now build the view and custody clients, doing gRPC with ourselves
