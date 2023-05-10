@@ -219,7 +219,19 @@ where
                     .await?;
 
                     // Finalize and submit the transaction plan.
-                    self.finalize_and_submit(plan).await?;
+                    match self.finalize_and_submit(plan).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::info!(
+                                ?e,
+                                ?market,
+                                ?current_height,
+                                ?book_ticker_event,
+                                "failed to update position"
+                            );
+                            continue;
+                        }
+                    };
 
                     // Update the last updated height for this symbol
                     self.last_updated_height
