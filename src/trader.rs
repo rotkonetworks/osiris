@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, future, str::FromStr};
+use std::{
+    collections::{BTreeMap, HashSet},
+    future,
+    str::FromStr,
+};
 
 use anyhow::Context;
 use binance::model::BookTickerEvent;
@@ -227,6 +231,7 @@ where
                                 ?market,
                                 ?current_height,
                                 ?book_ticker_event,
+                                ?plan,
                                 "failed to update position"
                             );
                             continue;
@@ -303,6 +308,7 @@ where
         } else {
             for pos in positions {
                 // Close the position
+                tracing::trace!(?pos, "closing position");
                 plan = plan.position_close(pos.id());
             }
         }
@@ -362,6 +368,8 @@ where
                 r2: reserves_2 / 2u32.into(),
             },
         );
+
+        tracing::trace!(?pos, "opening position");
         plan = plan.position_open(pos);
 
         Ok(())
@@ -378,7 +386,7 @@ where
             for pos in positions {
                 // Withdraw the position
                 let position_id = pos.id();
-                tracing::debug!(?position_id, "withdrawing position");
+                tracing::trace!(?pos, "withdrawing position");
                 plan = plan.position_withdraw(position_id, pos.reserves, pos.phi.pair);
             }
         }
@@ -618,8 +626,19 @@ where
         positions.extend(forward_positions);
         positions.extend(flipped_positions);
 
-        tracing::debug!(?positions, "found open liquidity positions");
-        Ok((positions))
+        // A position might have been returned twice, so dedupe:
+        let mut deduped_positions: Vec<Position> = vec![];
+        'outer: for pos in positions {
+            for p2 in &deduped_positions {
+                if pos.id() == p2.id() {
+                    continue 'outer;
+                }
+            }
+            deduped_positions.push(pos);
+        }
+
+        tracing::debug!(?deduped_positions, "found open liquidity positions");
+        Ok((deduped_positions))
     }
 
     async fn get_spendable_balance(

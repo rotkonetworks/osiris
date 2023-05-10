@@ -80,7 +80,7 @@ impl Serve {
         for permutation in permutations {
             match market.get_price(permutation.clone()) {
                 Ok(_) => symbols.push(permutation.clone()),
-                Err(_) => tracing::debug!("Invalid symbol: {}", permutation),
+                Err(_) => tracing::trace!("Invalid symbol: {}", permutation),
             }
         }
 
