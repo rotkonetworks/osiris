@@ -1,8 +1,4 @@
-use std::{
-    collections::{BTreeMap, HashSet},
-    future,
-    str::FromStr,
-};
+use std::{collections::BTreeMap, future, str::FromStr};
 
 use anyhow::Context;
 use binance::model::BookTickerEvent;
@@ -172,7 +168,7 @@ where
                         .expect("missing symbol -> DirectedUnitPair mapping");
 
                     // Create a plan that will contain all LP management operations based on this quote.
-                    let mut plan = &mut Planner::new(OsRng);
+                    let plan = &mut Planner::new(OsRng);
 
                     // Find the spendable balance for each asset in the market.
                     // This only counts the spendable notes associated with the assets,
@@ -252,10 +248,11 @@ where
             }
             self.actions = actions;
         }
+
         Ok(())
     }
 
-    async fn finalize_and_submit(&mut self, mut plan: &mut Planner<OsRng>) -> anyhow::Result<()> {
+    async fn finalize_and_submit(&mut self, plan: &mut Planner<OsRng>) -> anyhow::Result<()> {
         // Pay no fee for the transaction.
         let fee = Fee::from_staking_token_amount(0u32.into());
 
@@ -569,7 +566,7 @@ where
             .await?;
 
         tracing::debug!(?positions, "found closed liquidity positions");
-        Ok((positions))
+        Ok(positions)
     }
 
     /// Returns _all_ open liquidity positions for both directions of the market,
@@ -638,7 +635,7 @@ where
         }
 
         tracing::debug!(?deduped_positions, "found open liquidity positions");
-        Ok((deduped_positions))
+        Ok(deduped_positions)
     }
 
     async fn get_spendable_balance(
