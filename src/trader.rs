@@ -72,6 +72,7 @@ where
     /// Actions to perform.
     // actions: BTreeMap<String, Arc<watch::Receiver<Option<BookTickerEvent>>>>,
     actions: BTreeMap<String, watch::Receiver<Option<BookTickerEvent>>>,
+    last_updated_height: BTreeMap<String, u64>,
     view: V,
     custody: C,
     fvk: FullViewingKey,
@@ -116,6 +117,7 @@ where
                 fvk,
                 account,
                 pd_url,
+                last_updated_height: BTreeMap::new(),
             },
         )
     }
@@ -138,6 +140,19 @@ where
                     }
                     let book_ticker_event = bte.unwrap();
                     tracing::debug!("trader received event: {:?}", book_ticker_event);
+
+                    // Only update positions for a given symbol at most once per block
+                    let current_height = self
+                        .view
+                        .status(self.fvk.account_group_id())
+                        .await?
+                        .sync_height;
+                    if let Some(last_updated_height) = self.last_updated_height.get(symbol) {
+                        if !(current_height > *last_updated_height) {
+                            tracing::debug!(?symbol, "skipping symbol, already updated this block");
+                            continue;
+                        }
+                    }
 
                     println!(
                         "Symbol: {}, best_bid: {}, best_ask: {}",
@@ -204,6 +219,10 @@ where
 
                     // Finalize and submit the transaction plan.
                     self.finalize_and_submit(plan).await?;
+
+                    // Update the last updated height for this symbol
+                    self.last_updated_height
+                        .insert(symbol.clone(), current_height);
                 }
             }
         }
