@@ -1,16 +1,25 @@
-use std::{collections::BTreeMap, str::FromStr};
+use std::{collections::BTreeMap, future, str::FromStr};
 
 use anyhow::Context;
 use binance::model::BookTickerEvent;
 use futures::{StreamExt, TryStreamExt};
 use penumbra_crypto::{
-    dex::{lp::position::Position, Market},
+    asset::Denom,
+    dex::{
+        lp::{
+            position::{self, Position},
+            Reserves,
+        },
+        DirectedUnitPair,
+    },
     keys::AddressIndex,
     Amount, Fee, FullViewingKey,
 };
 use penumbra_custody::{AuthorizeRequest, CustodyClient};
-use penumbra_proto::client::v1alpha1::specific_query_service_client::SpecificQueryServiceClient;
 use penumbra_proto::client::v1alpha1::LiquidityPositionsByPriceRequest;
+use penumbra_proto::client::v1alpha1::{
+    specific_query_service_client::SpecificQueryServiceClient, LiquidityPositionsRequest,
+};
 use penumbra_view::{Planner, ViewClient};
 use rand::rngs::OsRng;
 use tokio::sync::watch;
@@ -20,37 +29,37 @@ use lazy_static::lazy_static;
 use url::Url;
 
 // Mapping the symbol (in Binance's API, a `String` like `ETHBTC`) to
-// a Penumbra `Market` is tricky.
+// a Penumbra `DirectedUnitPair` is tricky.
 //
 // Luckily, since we only care about a handful of symbols, we can just
 // hardcode the mapping here. If you were trying to work with other symbols,
 // you'd crash and hopefully find this constant!
 lazy_static! {
-    pub static ref SYMBOL_MAP: BTreeMap<String, Market> = BTreeMap::from([
+    pub static ref SYMBOL_MAP: BTreeMap<String, DirectedUnitPair> = BTreeMap::from([
         (
             // ETH priced in terms of BTC
             "ETHBTC".to_string(),
-            Market::from_str("test_btc:test_eth").unwrap()
+            DirectedUnitPair::from_str("test_btc:test_eth").unwrap()
         ),
         (
             // ETH priced in terms of USD
             "ETHUSD".to_string(),
-            Market::from_str("test_usd:test_eth").unwrap()
+            DirectedUnitPair::from_str("test_usd:test_eth").unwrap()
         ),
         (
             // BTC priced in terms of USD
             "BTCUSD".to_string(),
-            Market::from_str("test_usd:test_btc").unwrap()
+            DirectedUnitPair::from_str("test_usd:test_btc").unwrap()
         ),
         (
             // ATOM priced in terms of BTC
             "ATOMBTC".to_string(),
-            Market::from_str("test_btc:test_atom").unwrap()
+            DirectedUnitPair::from_str("test_btc:test_atom").unwrap()
         ),
         (
             // ATOM priced in terms of USD
             "ATOMUSD".to_string(),
-            Market::from_str("test_usd:test_atom").unwrap()
+            DirectedUnitPair::from_str("test_usd:test_atom").unwrap()
         ),
     ]);
 }
@@ -111,11 +120,14 @@ where
         )
     }
 
-    /// Run the responder.
+    /// Run the trader.
     pub async fn run(mut self) -> anyhow::Result<()> {
         // Doing this loop without any shutdown signal doesn't exactly
         // provide a clean shutdown, but it works for now.
         loop {
+            // TODO: ensure we have some positions from `penumbra` to create a more interesting
+            // trading environment :)
+
             // Check each pair
             for (symbol, rx) in self.actions.clone().iter() {
                 // If there's a new quote for this symbol, process it
@@ -137,7 +149,7 @@ where
                     // Look up the Binance symbol's mapping to a Penumbra market
                     let market = SYMBOL_MAP
                         .get(symbol)
-                        .expect("missing symbol -> Market mapping");
+                        .expect("missing symbol -> DirectedUnitPair mapping");
 
                     // Create a plan that will contain all LP management operations based on this quote.
                     let mut plan = &mut Planner::new(OsRng);
@@ -149,13 +161,46 @@ where
                     let (mut reserves_1, mut reserves_2) =
                         self.get_spendable_balance(market).await?;
 
-                    // Fetch all known liquidity positions for the trading pair (both directions).
+                    // Fetch all known open liquidity positions for the trading pair (both directions).
                     let open_liquidity_positions: Vec<Position> =
-                        self.get_open_liquidity_positions(market).await?;
+                        self.get_owned_open_liquidity_positions(market).await?;
 
-                    // Close all the open liquidity positions for the trading pair (both directions).
+                    // Close all our the open liquidity positions for the trading pair (both directions).
                     self.close_liquidity_positions(open_liquidity_positions, plan)
                         .await?;
+
+                    // Fetch all our closed liquidity positions for the trading pair (both directions).
+                    let closed_liquidity_positions: Vec<Position> =
+                        self.get_owned_closed_liquidity_positions(market).await?;
+
+                    // Since the closed liquidity positions will be withdrawn in this transaction, we can use their reserves
+                    // when opening the new liquidity positions.
+                    for position in closed_liquidity_positions.iter() {
+                        // The canonical ordering in the position may differ from the market directed ordering
+                        if position.phi.pair.asset_1() == market.start.id() {
+                            reserves_1 += position.reserves.r1;
+                            reserves_2 += position.reserves.r2;
+                        } else {
+                            reserves_1 += position.reserves.r2;
+                            reserves_2 += position.reserves.r1;
+                        }
+                    }
+
+                    // Withdraw all closed liquidity positions for this trading pair.
+                    self.withdraw_liquidity_positions(closed_liquidity_positions, plan)
+                        .await?;
+
+                    // Open liquidity position with half of the reserves we have available
+                    // TODO: do something more sophisticated with the xy=k approximation here
+                    // maybe
+                    self.open_liquidity_position(
+                        market,
+                        reserves_1,
+                        reserves_2,
+                        book_ticker_event,
+                        plan,
+                    )
+                    .await?;
 
                     // Finalize and submit the transaction plan.
                     self.finalize_and_submit(plan).await?;
@@ -220,55 +265,6 @@ where
         positions: Vec<Position>,
         mut plan: &mut Planner<OsRng>,
     ) -> anyhow::Result<()> {
-        //     // See what liquidity positions we currently have open
-        //     // in both directions of the market.
-        //     fn is_opened_position_nft(denom: &Denom) -> bool {
-        //         let prefix = format!("lpnft_opened_");
-
-        //         tracing::debug!(?denom, "checking if denom is an opened position NFT");
-        //         denom.starts_with(&prefix)
-        //     }
-
-        //     let asset_cache = self.view.assets().await?;
-
-        //     // Create a `Vec<String>` of the currently closed LPs
-        //     // for this trading pair so we can withdraw them.
-        //     //
-        //     // Their reserves can be used when opening the new position
-        //     // in the transaction.
-
-        //     // Create a `Vec<String>` of the currently open LPs
-        //     // for this trading pair so we can close them.
-        //     let lp_open_notes: Vec<String> = notes
-        //         .iter()
-        //         .flat_map(|(index, notes_by_asset)| {
-        //             // Include each note individually:
-        //             notes_by_asset.iter().flat_map(|(_asset, notes)| {
-        //                 notes
-        //                     .iter()
-        //                     .filter(|record| {
-        //                         let base_denom = asset_cache.get(&record.note.asset_id());
-        //                         if base_denom.is_none() {
-        //                             return false;
-        //                         }
-
-        //                         // TODO: ensure the LPNFT is for the correct market!
-        //                         // currently this will try to close all LPs, lol
-        //                         // let position = position::Position::new();
-        //                         // if position.id() == record.note.asset_id()
-        //                         (*index == AddressIndex::from(self.account))
-        //                             && is_opened_position_nft(base_denom.unwrap())
-        //                     })
-        //                     .map(|record| {
-        //                         asset_cache
-        //                             .get(&record.note.asset_id())
-        //                             .unwrap()
-        //                             .to_string()
-        //                     })
-        //             })
-        //         })
-        //         .collect();
-
         if positions.is_empty() {
             tracing::debug!("No open positions are available to close.");
         } else {
@@ -281,7 +277,264 @@ where
         Ok(())
     }
 
-    async fn get_open_liquidity_positions(&self, market: &Market) -> anyhow::Result<Vec<Position>> {
+    async fn open_liquidity_position(
+        &mut self,
+        market: &DirectedUnitPair,
+        reserves_1: Amount,
+        reserves_2: Amount,
+        quote: BookTickerEvent,
+        mut plan: &mut Planner<OsRng>,
+    ) -> anyhow::Result<()> {
+        // put up half the available reserves
+        let reserves = Reserves {
+            r1: reserves_1 / 2u32.into(),
+            r2: reserves_2 / 2u32.into(),
+        };
+
+        if reserves.r1 == 0u32.into() && reserves.r2 == 0u32.into() {
+            // No reserves available to open a position.
+            tracing::debug!(?market, "No reserves available to open a position.");
+            return Ok(());
+        }
+
+        // The `fee` here is the `spread`.
+        let best_ask = quote
+            .best_ask
+            .parse::<f64>()
+            .expect("bad f64 in binance api return");
+        let best_bid = quote
+            .best_bid
+            .parse::<f64>()
+            .expect("bad f64 in binance api return");
+        let mid_price = (best_ask + best_bid) / 2.0;
+
+        // Calculate spread:
+        let difference = (best_ask - best_bid).abs();
+        let fraction = difference / mid_price;
+        // max of 50% fee
+        let spread = (fraction * 100.0 * 100.0).clamp(0.0, 5000.0);
+
+        let pos = Position::new(
+            OsRng,
+            market.into_directed_trading_pair(),
+            spread as u32,
+            // p is always 1
+            1u32.into(),
+            // and price is expressed in units of asset 2
+            (mid_price as u64).into(),
+            // put up half the available reserves
+            Reserves {
+                r1: reserves_1 / 2u32.into(),
+                r2: reserves_2 / 2u32.into(),
+            },
+        );
+        plan = plan.position_open(pos);
+
+        Ok(())
+    }
+
+    async fn withdraw_liquidity_positions(
+        &mut self,
+        positions: Vec<Position>,
+        mut plan: &mut Planner<OsRng>,
+    ) -> anyhow::Result<()> {
+        if positions.is_empty() {
+            tracing::debug!("No closed positions are available to withdraw.");
+        } else {
+            for pos in positions {
+                // Withdraw the position
+                let position_id = pos.id();
+                tracing::debug!(?position_id, "withdrawing position");
+                plan = plan.position_withdraw(position_id, pos.reserves, pos.phi.pair);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns only closed liquidity positions that we own.
+    async fn get_owned_closed_liquidity_positions(
+        &mut self,
+        market: &DirectedUnitPair,
+    ) -> anyhow::Result<Vec<Position>> {
+        // We need to use the list of our notes to determine which positions we own.
+        let notes = self
+            .view
+            .unspent_notes_by_address_and_asset(self.fvk.account_group_id())
+            .await?;
+
+        fn is_closed_position_nft(denom: &Denom) -> bool {
+            let prefix = format!("lpnft_closed_");
+
+            denom.starts_with(&prefix)
+        }
+
+        // TODO: we query the view server for this too much, maybe
+        // we should hang on to it somewhere
+        let asset_cache = self.view.assets().await?;
+
+        // Create a `Vec<String>` of the currently closed LPs
+        // for all trading pairs.
+        let lp_closed_notes: Vec<String> = notes
+            .iter()
+            .flat_map(|(index, notes_by_asset)| {
+                // Include each note individually:
+                notes_by_asset.iter().flat_map(|(_asset, notes)| {
+                    notes
+                        .iter()
+                        .filter(|record| {
+                            let base_denom = asset_cache.get(&record.note.asset_id());
+                            if base_denom.is_none() {
+                                return false;
+                            }
+
+                            (*index == AddressIndex::from(self.account))
+                                && is_closed_position_nft(base_denom.unwrap())
+                        })
+                        .map(|record| {
+                            asset_cache
+                                .get(&record.note.asset_id())
+                                .unwrap()
+                                .to_string()
+                        })
+                })
+            })
+            .collect();
+
+        let closed_liquidity_positions: Vec<Position> = self
+            .get_closed_liquidity_positions(market)
+            .await?
+            .iter()
+            // Exclude positions we don't control
+            // by seeing if we own a closed LPNFT for the position
+            .filter(|pos| lp_closed_notes.contains(&pos.id().to_string()))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        tracing::debug!(
+            ?closed_liquidity_positions,
+            "found owned closed liquidity positions"
+        );
+        Ok(closed_liquidity_positions)
+    }
+
+    /// Returns only open liquidity positions that we own.
+    async fn get_owned_open_liquidity_positions(
+        &mut self,
+        market: &DirectedUnitPair,
+    ) -> anyhow::Result<Vec<Position>> {
+        // We need to use the list of our notes to determine which positions we own.
+        let notes = self
+            .view
+            .unspent_notes_by_address_and_asset(self.fvk.account_group_id())
+            .await?;
+
+        fn is_opened_position_nft(denom: &Denom) -> bool {
+            let prefix = format!("lpnft_opened_");
+
+            denom.starts_with(&prefix)
+        }
+
+        // TODO: we query the view server for this too much, maybe
+        // we should hang on to it somewhere
+        let asset_cache = self.view.assets().await?;
+
+        // Create a `Vec<String>` of the currently open LPs
+        // for all trading pairs.
+        let lp_open_notes: Vec<String> = notes
+            .iter()
+            .flat_map(|(index, notes_by_asset)| {
+                // Include each note individually:
+                notes_by_asset.iter().flat_map(|(_asset, notes)| {
+                    notes
+                        .iter()
+                        .filter(|record| {
+                            let base_denom = asset_cache.get(&record.note.asset_id());
+                            if base_denom.is_none() {
+                                return false;
+                            }
+
+                            (*index == AddressIndex::from(self.account))
+                                && is_opened_position_nft(base_denom.unwrap())
+                        })
+                        .map(|record| {
+                            asset_cache
+                                .get(&record.note.asset_id())
+                                .unwrap()
+                                .to_string()
+                        })
+                })
+            })
+            .collect();
+
+        // TODO: we could query the chain for each liquidity position we own an open NFT for
+        // and see if it's for this market. instead we iterate every single position. oh well, works
+        // for now. ideally the view service would handle this better.
+        let open_liquidity_positions: Vec<Position> = self
+            .get_open_liquidity_positions(market)
+            .await?
+            .iter()
+            // Exclude positions we don't control
+            // by seeing if we own an open LPNFT for the position
+            .filter(|pos| lp_open_notes.contains(&pos.id().to_string()))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        tracing::debug!(
+            ?open_liquidity_positions,
+            "found owned open liquidity positions"
+        );
+        Ok(open_liquidity_positions)
+    }
+
+    /// Returns _all_ closed liquidity positions for both directions of the market,
+    /// whether they're owned by us or not.
+    async fn get_closed_liquidity_positions(
+        &self,
+        market: &DirectedUnitPair,
+    ) -> anyhow::Result<Vec<Position>> {
+        let mut client = self.specific_client().await?;
+
+        // There's no queryable index for non-open positions,
+        // so we need to query _all_ known positions and then filter :(
+        // TODO: maybe support this better in pd?
+        // https://github.com/penumbra-zone/penumbra/issues/2528
+        let positions_stream =
+            // This API will return positions of any status.
+            client.liquidity_positions(LiquidityPositionsRequest {
+                include_closed: true,
+                ..Default::default()
+            });
+        let positions_stream = positions_stream.await?.into_inner();
+
+        let positions = positions_stream
+            .map_err(|e| anyhow::anyhow!("error fetching liquidity positions: {}", e))
+            .and_then(|msg| async move {
+                msg.data
+                    .ok_or_else(|| anyhow::anyhow!("missing liquidity position in response data"))
+                    .map(Position::try_from)?
+            })
+            .boxed()
+            // filter for closed positions for the market we want
+            .filter(|pos| {
+                future::ready(
+                    pos.as_ref().unwrap().phi.pair == market.into_directed_trading_pair().into()
+                        && pos.as_ref().unwrap().state == position::State::Closed,
+                )
+            })
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        tracing::debug!(?positions, "found closed liquidity positions");
+        Ok((positions))
+    }
+
+    /// Returns _all_ open liquidity positions for both directions of the market,
+    /// whether they're owned by us or not.
+    async fn get_open_liquidity_positions(
+        &self,
+        market: &DirectedUnitPair,
+    ) -> anyhow::Result<Vec<Position>> {
         let mut client = self.specific_client().await?;
 
         // Check forward direction:
@@ -330,11 +583,14 @@ where
         positions.extend(forward_positions);
         positions.extend(flipped_positions);
 
-        tracing::debug!(?positions, "found liquidity positions");
+        tracing::debug!(?positions, "found open liquidity positions");
         Ok((positions))
     }
 
-    async fn get_spendable_balance(&mut self, market: &Market) -> anyhow::Result<(Amount, Amount)> {
+    async fn get_spendable_balance(
+        &mut self,
+        market: &DirectedUnitPair,
+    ) -> anyhow::Result<(Amount, Amount)> {
         // Get the current balance from the view service.
         // We could do this outside of the loop, but checking here
         // assures we have the latest data, and the in-memory gRPC interface
