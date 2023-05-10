@@ -84,6 +84,8 @@ impl Serve {
             }
         }
 
+        tracing::debug!(?symbols, "found valid trading symbols in Binance API");
+
         // Look up the path to the view state file per platform, creating the directory if needed
         let data_dir = self.data_dir.unwrap_or_else(|| {
             ProjectDirs::from("zone", "penumbra", "pcli")

@@ -82,7 +82,7 @@ impl BinanceFetcher {
         if let Err(e) = web_socket.event_loop(&keep_running) {
             match e {
                 err => {
-                    println!("Error: {:?}", err);
+                    tracing::error!(?err, "error in web socket event loop");
                 }
             }
         }
