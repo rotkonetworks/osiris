@@ -346,10 +346,11 @@ where
             OsRng,
             market.into_directed_trading_pair(),
             spread as u32,
-            // p is always 1
-            1u32.into(),
+            // 10000x scaling factor is applied in case values are small
+            // p is always 10000
+            10000u32.into(),
             // and price is expressed in units of asset 2
-            (mid_price as u64).into(),
+            ((mid_price * 10000.0) as u64).into(),
             // put up half the available reserves
             Reserves {
                 r1: reserves_1 / 2u32.into(),
