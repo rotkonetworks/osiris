@@ -6,7 +6,7 @@ use futures::{StreamExt, TryStreamExt};
 use penumbra_crypto::{
     dex::{lp::position::Position, Market},
     keys::AddressIndex,
-    Amount, FullViewingKey,
+    Amount, Fee, FullViewingKey,
 };
 use penumbra_custody::{AuthorizeRequest, CustodyClient};
 use penumbra_proto::client::v1alpha1::specific_query_service_client::SpecificQueryServiceClient;
@@ -139,6 +139,9 @@ where
                         .get(symbol)
                         .expect("missing symbol -> Market mapping");
 
+                    // Create a plan that will contain all LP management operations based on this quote.
+                    let mut plan = &mut Planner::new(OsRng);
+
                     // Find the spendable balance for each asset in the market.
                     // This only counts the spendable notes associated with the assets,
                     // later on we will also need to account for the liquidity positions
@@ -151,15 +154,72 @@ where
                         self.get_open_liquidity_positions(market).await?;
 
                     // Close all the open liquidity positions for the trading pair (both directions).
-                    self.close_liquidity_positions(open_liquidity_positions)
+                    self.close_liquidity_positions(open_liquidity_positions, plan)
                         .await?;
+
+                    // Finalize and submit the transaction plan.
+                    self.finalize_and_submit(plan).await?;
                 }
             }
         }
         Ok(())
     }
 
-    async fn close_liquidity_positions(&mut self, positions: Vec<Position>) -> anyhow::Result<()> {
+    async fn finalize_and_submit(&mut self, mut plan: &mut Planner<OsRng>) -> anyhow::Result<()> {
+        // Pay no fee for the transaction.
+        let fee = Fee::from_staking_token_amount(0u32.into());
+
+        let final_plan = plan
+            .fee(fee)
+            .plan(
+                &mut self.view,
+                self.fvk.account_group_id(),
+                AddressIndex::from(self.account),
+            )
+            .await;
+
+        // Sometimes building the plan can fail with an error, because there were no actions
+        // present. There's not an easy way to check this in the planner API right now.
+        if let Err(e) = final_plan {
+            tracing::debug!(?e, "failed to build plan");
+            return Ok(());
+        }
+
+        let final_plan = final_plan.unwrap();
+
+        // 2. Authorize and build the transaction.
+        let auth_data = self
+            .custody
+            .authorize(AuthorizeRequest {
+                plan: final_plan.clone(),
+                account_group_id: Some(self.fvk.account_group_id()),
+                pre_authorizations: Vec::new(),
+            })
+            .await?
+            .data
+            .ok_or_else(|| anyhow::anyhow!("no auth data"))?
+            .try_into()?;
+        let witness_data = self
+            .view
+            .witness(self.fvk.account_group_id(), &final_plan)
+            .await?;
+        let unauth_tx = final_plan
+            .build_concurrent(OsRng, &self.fvk, witness_data)
+            .await?;
+
+        let tx = unauth_tx.authorize(&mut OsRng, &auth_data)?;
+
+        // 3. Broadcast the transaction and wait for confirmation.
+        self.view.broadcast_transaction(tx, true).await?;
+
+        Ok(())
+    }
+
+    async fn close_liquidity_positions(
+        &mut self,
+        positions: Vec<Position>,
+        mut plan: &mut Planner<OsRng>,
+    ) -> anyhow::Result<()> {
         //     // See what liquidity positions we currently have open
         //     // in both directions of the market.
         //     fn is_opened_position_nft(denom: &Denom) -> bool {
@@ -209,66 +269,15 @@ where
         //         })
         //         .collect();
 
-        //     // Pay no fee for the close transaction.
-        //     let fee = Fee::from_staking_token_amount(0u32.into());
+        if positions.is_empty() {
+            tracing::debug!("No open positions are available to close.");
+        } else {
+            for pos in positions {
+                // Close the position
+                plan = plan.position_close(pos.id());
+            }
+        }
 
-        //     let mut plan = &mut Planner::new(OsRng);
-
-        //     if lp_open_notes.is_empty() {
-        //         tracing::debug!("No open positions are available to close.");
-        //     } else {
-        //         for denom_string in lp_open_notes {
-        //             // Close the position associated with the opened NFT note
-        //             let position_id = position::Id::from_str(&denom_string[13..])
-        //                 .expect("improperly formatted LPNFT position id");
-        //             plan = plan.position_close(position_id);
-        //         }
-        //     }
-
-        //     let final_plan = plan
-        //         .fee(fee)
-        //         .plan(
-        //             &mut self.view,
-        //             self.fvk.account_group_id(),
-        //             AddressIndex::from(self.account),
-        //         )
-        //         .await;
-
-        //     // Sometimes building the plan can fail with an error, because there were no actions
-        //     // present. There's not an easy way to check this in the planner API right now.
-        //     if let Err(e) = final_plan {
-        //         tracing::debug!(?e, "failed to build plan");
-        //         continue;
-        //     }
-
-        //     let final_plan = final_plan.unwrap();
-
-        //     // 2. Authorize and build the transaction.
-        //     let auth_data = self
-        //         .custody
-        //         .authorize(AuthorizeRequest {
-        //             plan: final_plan.clone(),
-        //             account_group_id: Some(self.fvk.account_group_id()),
-        //             pre_authorizations: Vec::new(),
-        //         })
-        //         .await?
-        //         .data
-        //         .ok_or_else(|| anyhow::anyhow!("no auth data"))?
-        //         .try_into()?;
-        //     let witness_data = self
-        //         .view
-        //         .witness(self.fvk.account_group_id(), &final_plan)
-        //         .await?;
-        //     let unauth_tx = final_plan
-        //         .build_concurrent(OsRng, &self.fvk, witness_data)
-        //         .await?;
-
-        //     let tx = unauth_tx.authorize(&mut OsRng, &auth_data)?;
-
-        //     // 3. Broadcast the transaction and wait for confirmation.
-        //     tracing::debug!("transmission of close disabled rn");
-        //     // self.view.broadcast_transaction(tx, true).await?;
-        // }
         Ok(())
     }
 
@@ -277,6 +286,7 @@ where
 
         // Check forward direction:
         let positions_stream =
+            // This API will return only open positions.
             client.liquidity_positions_by_price(LiquidityPositionsByPriceRequest {
                 trading_pair: Some(market.into_directed_trading_pair().into()),
                 limit: 0,
@@ -297,6 +307,7 @@ where
 
         // Check flipped direction:
         let positions_stream =
+            // This API will return only open positions.
             client.liquidity_positions_by_price(LiquidityPositionsByPriceRequest {
                 trading_pair: Some(market.into_directed_trading_pair().flip().into()),
                 limit: 0,
@@ -315,7 +326,6 @@ where
             .try_collect::<Vec<_>>()
             .await?;
 
-        // TODO: do we need to check if they're open? not sure what this API returns
         let mut positions = vec![];
         positions.extend(forward_positions);
         positions.extend(flipped_positions);
