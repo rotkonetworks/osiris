@@ -58,7 +58,7 @@ impl BinanceFetcher {
                             (last_sent_quote.unwrap().best_bid != book_ticker_event.best_bid ||
                             last_sent_quote.unwrap().best_ask != book_ticker_event.best_ask))
                     {
-                        tracing::debug!(?book_ticker_event, "received new quote");
+                        tracing::debug!(?book_ticker_event, ?last_sent_quote, "received new quote");
                         self.txs
                             .get(&book_ticker_event.symbol)
                             .expect("missing sender for symbol")

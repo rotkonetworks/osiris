@@ -131,10 +131,11 @@ where
             // trading environment :)
 
             // Check each pair
-            for (symbol, rx) in self.actions.clone().iter() {
+            let mut actions = self.actions.clone();
+            for (symbol, rx) in actions.iter_mut() {
                 // If there's a new quote for this symbol, process it
                 if rx.has_changed().unwrap() {
-                    let bte = rx.clone().borrow_and_update().clone();
+                    let bte = rx.borrow_and_update().clone();
                     if bte.is_none() {
                         continue;
                     }
@@ -212,7 +213,7 @@ where
                         market,
                         reserves_1,
                         reserves_2,
-                        book_ticker_event,
+                        book_ticker_event.clone(),
                         plan,
                     )
                     .await?;
@@ -223,8 +224,16 @@ where
                     // Update the last updated height for this symbol
                     self.last_updated_height
                         .insert(symbol.clone(), current_height);
+
+                    tracing::info!(
+                        ?market,
+                        ?current_height,
+                        ?book_ticker_event,
+                        "successfully updated positions"
+                    );
                 }
             }
+            self.actions = actions;
         }
         Ok(())
     }
@@ -426,7 +435,7 @@ where
             .iter()
             // Exclude positions we don't control
             // by seeing if we own a closed LPNFT for the position
-            .filter(|pos| lp_closed_notes.contains(&pos.id().to_string()))
+            .filter(|pos| lp_closed_notes.contains(&format!("lpnft_closed_{}", &pos.id())))
             .cloned()
             .collect::<Vec<_>>();
 
@@ -485,6 +494,7 @@ where
                 })
             })
             .collect();
+        tracing::debug!(?lp_open_notes, "found owned open LP notes");
 
         // TODO: we could query the chain for each liquidity position we own an open NFT for
         // and see if it's for this market. instead we iterate every single position. oh well, works
@@ -495,7 +505,7 @@ where
             .iter()
             // Exclude positions we don't control
             // by seeing if we own an open LPNFT for the position
-            .filter(|pos| lp_open_notes.contains(&pos.id().to_string()))
+            .filter(|pos| lp_open_notes.contains(&format!("lpnft_opened_{}", &pos.id())))
             .cloned()
             .collect::<Vec<_>>();
 
