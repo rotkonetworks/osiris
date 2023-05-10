@@ -127,7 +127,8 @@ impl Serve {
         tracing::info!("initial sync complete");
 
         // Instantiate the trader (manages the bot's portfolio based on MPSC messages containing price quotes)
-        let (quotes_sender, trader) = Trader::new(0, fvk, view, custody, symbols.clone());
+        let (quotes_sender, trader) =
+            Trader::new(0, fvk, view, custody, symbols.clone(), self.node);
 
         // Instantiate the Binance fetcher (responsible for fetching binance API data and sending along to the trader)
         let binance_fetcher = BinanceFetcher::new(quotes_sender, symbols, binance_config);

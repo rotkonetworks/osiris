@@ -1,18 +1,23 @@
 use std::{collections::BTreeMap, str::FromStr};
 
+use anyhow::Context;
 use binance::model::BookTickerEvent;
+use futures::{StreamExt, TryStreamExt};
 use penumbra_crypto::{
-    asset::Denom,
-    dex::{lp::position, Market},
+    dex::{lp::position::Position, Market},
     keys::AddressIndex,
-    Amount, Fee, FullViewingKey,
+    Amount, FullViewingKey,
 };
 use penumbra_custody::{AuthorizeRequest, CustodyClient};
+use penumbra_proto::client::v1alpha1::specific_query_service_client::SpecificQueryServiceClient;
+use penumbra_proto::client::v1alpha1::LiquidityPositionsByPriceRequest;
 use penumbra_view::{Planner, ViewClient};
 use rand::rngs::OsRng;
 use tokio::sync::watch;
+use tonic::transport::{Channel, ClientTlsConfig};
 
 use lazy_static::lazy_static;
+use url::Url;
 
 // Mapping the symbol (in Binance's API, a `String` like `ETHBTC`) to
 // a Penumbra `Market` is tricky.
@@ -62,6 +67,7 @@ where
     custody: C,
     fvk: FullViewingKey,
     account: u32,
+    pd_url: Url,
 }
 
 impl<V, C> Trader<V, C>
@@ -77,6 +83,7 @@ where
         custody: C,
         // List of symbols to monitor
         symbols: Vec<String>,
+        pd_url: Url,
     ) -> (
         BTreeMap<String, watch::Sender<Option<BookTickerEvent>>>,
         Self,
@@ -99,180 +106,283 @@ where
                 custody,
                 fvk,
                 account,
+                pd_url,
             },
         )
     }
 
     /// Run the responder.
     pub async fn run(mut self) -> anyhow::Result<()> {
+        // Doing this loop without any shutdown signal doesn't exactly
+        // provide a clean shutdown, but it works for now.
         loop {
             // Check each pair
-            for (symbol, rx) in self.actions.iter() {
-                // If there's a new event, process it
+            for (symbol, rx) in self.actions.clone().iter() {
+                // If there's a new quote for this symbol, process it
                 if rx.has_changed().unwrap() {
                     let bte = rx.clone().borrow_and_update().clone();
-                    if let Some(book_ticker_event) = bte {
-                        tracing::debug!("trader received event: {:?}", book_ticker_event);
-                        println!(
-                            "Symbol: {}, best_bid: {}, best_ask: {}",
-                            book_ticker_event.symbol,
-                            book_ticker_event.best_bid,
-                            book_ticker_event.best_ask
-                        );
-
-                        // Get the current balance from the view service.
-                        // We could do this outside of the loop, but checking here
-                        // assures we have the latest data, and the in-memory gRPC interface
-                        // should be fast.
-                        let notes = self
-                            .view
-                            .unspent_notes_by_address_and_asset(self.fvk.account_group_id())
-                            .await?;
-
-                        // Find the balance we have for the two assets in the market.
-                        if let Some(notes) = notes.get(&AddressIndex::from(self.account)) {
-                            let market = SYMBOL_MAP
-                                .get(symbol)
-                                .expect("missing symbol -> Market mapping");
-
-                            let (asset_1, asset_2) = (market.start.clone(), market.end.clone());
-
-                            let (mut reserves_1, mut reserves_2) =
-                                (Amount::from(0u32), Amount::from(0u32));
-
-                            for (asset_id, note_records) in notes {
-                                if *asset_id == asset_1.id() {
-                                    for note_record in note_records {
-                                        reserves_1 += note_record.note.amount();
-                                    }
-                                }
-                                if *asset_id == asset_2.id() {
-                                    for note_record in note_records {
-                                        reserves_2 += note_record.note.amount();
-                                    }
-                                }
-                            }
-
-                            tracing::debug!(
-                                ?asset_1,
-                                ?reserves_1,
-                                ?asset_2,
-                                ?reserves_2,
-                                "found balance for assets"
-                            );
-                        }
-
-                        // See what liquidity positions we currently have open
-                        // in both directions of the market.
-                        fn is_opened_position_nft(denom: &Denom) -> bool {
-                            let prefix = format!("lpnft_opened_");
-
-                            tracing::debug!(?denom, "checking if denom is an opened position NFT");
-                            denom.starts_with(&prefix)
-                        }
-
-                        let asset_cache = self.view.assets().await?;
-
-                        // Create a `Vec<String>` of the currently closed LPs
-                        // for this trading pair so we can withdraw them.
-                        //
-                        // Their reserves can be used when opening the new position
-                        // in the transaction.
-
-                        // Create a `Vec<String>` of the currently open LPs
-                        // for this trading pair so we can close them.
-                        let lp_open_notes: Vec<String> = notes
-                            .iter()
-                            .flat_map(|(index, notes_by_asset)| {
-                                // Include each note individually:
-                                notes_by_asset.iter().flat_map(|(_asset, notes)| {
-                                    notes
-                                        .iter()
-                                        .filter(|record| {
-                                            let base_denom =
-                                                asset_cache.get(&record.note.asset_id());
-                                            if base_denom.is_none() {
-                                                return false;
-                                            }
-
-                                            // TODO: ensure the LPNFT is for the correct market!
-                                            // currently this will try to close all LPs, lol
-                                            (*index == AddressIndex::from(self.account))
-                                                && is_opened_position_nft(base_denom.unwrap())
-                                        })
-                                        .map(|record| {
-                                            asset_cache
-                                                .get(&record.note.asset_id())
-                                                .unwrap()
-                                                .to_string()
-                                        })
-                                })
-                            })
-                            .collect();
-
-                        // Pay no fee for the close transaction.
-                        let fee = Fee::from_staking_token_amount(0u32.into());
-
-                        let mut plan = &mut Planner::new(OsRng);
-
-                        if lp_open_notes.is_empty() {
-                            tracing::debug!("No open positions are available to close.");
-                        } else {
-                            for denom_string in lp_open_notes {
-                                // Close the position associated with the opened NFT note
-                                let position_id = position::Id::from_str(&denom_string[13..])
-                                    .expect("improperly formatted LPNFT position id");
-                                plan = plan.position_close(position_id);
-                            }
-                        }
-
-                        let final_plan = plan
-                            .fee(fee)
-                            .plan(
-                                &mut self.view,
-                                self.fvk.account_group_id(),
-                                AddressIndex::from(self.account),
-                            )
-                            .await;
-
-                        // Sometimes building the plan can fail with an error, because there were no actions
-                        // present. There's not an easy way to check this in the planner API right now.
-                        if let Err(e) = final_plan {
-                            tracing::debug!(?e, "failed to build plan");
-                            continue;
-                        }
-
-                        let final_plan = final_plan.unwrap();
-
-                        // 2. Authorize and build the transaction.
-                        let auth_data = self
-                            .custody
-                            .authorize(AuthorizeRequest {
-                                plan: final_plan.clone(),
-                                account_group_id: Some(self.fvk.account_group_id()),
-                                pre_authorizations: Vec::new(),
-                            })
-                            .await?
-                            .data
-                            .ok_or_else(|| anyhow::anyhow!("no auth data"))?
-                            .try_into()?;
-                        let witness_data = self
-                            .view
-                            .witness(self.fvk.account_group_id(), &final_plan)
-                            .await?;
-                        let unauth_tx = final_plan
-                            .build_concurrent(OsRng, &self.fvk, witness_data)
-                            .await?;
-
-                        let tx = unauth_tx.authorize(&mut OsRng, &auth_data)?;
-
-                        // 3. Broadcast the transaction and wait for confirmation.
-                        self.view.broadcast_transaction(tx, true).await?;
+                    if bte.is_none() {
+                        continue;
                     }
+                    let book_ticker_event = bte.unwrap();
+                    tracing::debug!("trader received event: {:?}", book_ticker_event);
+
+                    println!(
+                        "Symbol: {}, best_bid: {}, best_ask: {}",
+                        book_ticker_event.symbol,
+                        book_ticker_event.best_bid,
+                        book_ticker_event.best_ask
+                    );
+
+                    // Look up the Binance symbol's mapping to a Penumbra market
+                    let market = SYMBOL_MAP
+                        .get(symbol)
+                        .expect("missing symbol -> Market mapping");
+
+                    // Find the spendable balance for each asset in the market.
+                    // This only counts the spendable notes associated with the assets,
+                    // later on we will also need to account for the liquidity positions
+                    // being withdrawn.
+                    let (mut reserves_1, mut reserves_2) =
+                        self.get_spendable_balance(market).await?;
+
+                    // Fetch all known liquidity positions for the trading pair (both directions).
+                    let open_liquidity_positions: Vec<Position> =
+                        self.get_open_liquidity_positions(market).await?;
+
+                    // Close all the open liquidity positions for the trading pair (both directions).
+                    self.close_liquidity_positions(open_liquidity_positions)
+                        .await?;
                 }
             }
         }
-
         Ok(())
+    }
+
+    async fn close_liquidity_positions(&mut self, positions: Vec<Position>) -> anyhow::Result<()> {
+        //     // See what liquidity positions we currently have open
+        //     // in both directions of the market.
+        //     fn is_opened_position_nft(denom: &Denom) -> bool {
+        //         let prefix = format!("lpnft_opened_");
+
+        //         tracing::debug!(?denom, "checking if denom is an opened position NFT");
+        //         denom.starts_with(&prefix)
+        //     }
+
+        //     let asset_cache = self.view.assets().await?;
+
+        //     // Create a `Vec<String>` of the currently closed LPs
+        //     // for this trading pair so we can withdraw them.
+        //     //
+        //     // Their reserves can be used when opening the new position
+        //     // in the transaction.
+
+        //     // Create a `Vec<String>` of the currently open LPs
+        //     // for this trading pair so we can close them.
+        //     let lp_open_notes: Vec<String> = notes
+        //         .iter()
+        //         .flat_map(|(index, notes_by_asset)| {
+        //             // Include each note individually:
+        //             notes_by_asset.iter().flat_map(|(_asset, notes)| {
+        //                 notes
+        //                     .iter()
+        //                     .filter(|record| {
+        //                         let base_denom = asset_cache.get(&record.note.asset_id());
+        //                         if base_denom.is_none() {
+        //                             return false;
+        //                         }
+
+        //                         // TODO: ensure the LPNFT is for the correct market!
+        //                         // currently this will try to close all LPs, lol
+        //                         // let position = position::Position::new();
+        //                         // if position.id() == record.note.asset_id()
+        //                         (*index == AddressIndex::from(self.account))
+        //                             && is_opened_position_nft(base_denom.unwrap())
+        //                     })
+        //                     .map(|record| {
+        //                         asset_cache
+        //                             .get(&record.note.asset_id())
+        //                             .unwrap()
+        //                             .to_string()
+        //                     })
+        //             })
+        //         })
+        //         .collect();
+
+        //     // Pay no fee for the close transaction.
+        //     let fee = Fee::from_staking_token_amount(0u32.into());
+
+        //     let mut plan = &mut Planner::new(OsRng);
+
+        //     if lp_open_notes.is_empty() {
+        //         tracing::debug!("No open positions are available to close.");
+        //     } else {
+        //         for denom_string in lp_open_notes {
+        //             // Close the position associated with the opened NFT note
+        //             let position_id = position::Id::from_str(&denom_string[13..])
+        //                 .expect("improperly formatted LPNFT position id");
+        //             plan = plan.position_close(position_id);
+        //         }
+        //     }
+
+        //     let final_plan = plan
+        //         .fee(fee)
+        //         .plan(
+        //             &mut self.view,
+        //             self.fvk.account_group_id(),
+        //             AddressIndex::from(self.account),
+        //         )
+        //         .await;
+
+        //     // Sometimes building the plan can fail with an error, because there were no actions
+        //     // present. There's not an easy way to check this in the planner API right now.
+        //     if let Err(e) = final_plan {
+        //         tracing::debug!(?e, "failed to build plan");
+        //         continue;
+        //     }
+
+        //     let final_plan = final_plan.unwrap();
+
+        //     // 2. Authorize and build the transaction.
+        //     let auth_data = self
+        //         .custody
+        //         .authorize(AuthorizeRequest {
+        //             plan: final_plan.clone(),
+        //             account_group_id: Some(self.fvk.account_group_id()),
+        //             pre_authorizations: Vec::new(),
+        //         })
+        //         .await?
+        //         .data
+        //         .ok_or_else(|| anyhow::anyhow!("no auth data"))?
+        //         .try_into()?;
+        //     let witness_data = self
+        //         .view
+        //         .witness(self.fvk.account_group_id(), &final_plan)
+        //         .await?;
+        //     let unauth_tx = final_plan
+        //         .build_concurrent(OsRng, &self.fvk, witness_data)
+        //         .await?;
+
+        //     let tx = unauth_tx.authorize(&mut OsRng, &auth_data)?;
+
+        //     // 3. Broadcast the transaction and wait for confirmation.
+        //     tracing::debug!("transmission of close disabled rn");
+        //     // self.view.broadcast_transaction(tx, true).await?;
+        // }
+        Ok(())
+    }
+
+    async fn get_open_liquidity_positions(&self, market: &Market) -> anyhow::Result<Vec<Position>> {
+        let mut client = self.specific_client().await?;
+
+        // Check forward direction:
+        let positions_stream =
+            client.liquidity_positions_by_price(LiquidityPositionsByPriceRequest {
+                trading_pair: Some(market.into_directed_trading_pair().into()),
+                limit: 0,
+                ..Default::default()
+            });
+        let positions_stream = positions_stream.await?.into_inner();
+
+        let forward_positions = positions_stream
+            .map_err(|e| anyhow::anyhow!("error fetching liquidity positions: {}", e))
+            .and_then(|msg| async move {
+                msg.data
+                    .ok_or_else(|| anyhow::anyhow!("missing liquidity position in response data"))
+                    .map(Position::try_from)?
+            })
+            .boxed()
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        // Check flipped direction:
+        let positions_stream =
+            client.liquidity_positions_by_price(LiquidityPositionsByPriceRequest {
+                trading_pair: Some(market.into_directed_trading_pair().flip().into()),
+                limit: 0,
+                ..Default::default()
+            });
+        let positions_stream = positions_stream.await?.into_inner();
+
+        let flipped_positions = positions_stream
+            .map_err(|e| anyhow::anyhow!("error fetching liquidity positions: {}", e))
+            .and_then(|msg| async move {
+                msg.data
+                    .ok_or_else(|| anyhow::anyhow!("missing liquidity position in response data"))
+                    .map(Position::try_from)?
+            })
+            .boxed()
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        // TODO: do we need to check if they're open? not sure what this API returns
+        let mut positions = vec![];
+        positions.extend(forward_positions);
+        positions.extend(flipped_positions);
+
+        tracing::debug!(?positions, "found liquidity positions");
+        Ok((positions))
+    }
+
+    async fn get_spendable_balance(&mut self, market: &Market) -> anyhow::Result<(Amount, Amount)> {
+        // Get the current balance from the view service.
+        // We could do this outside of the loop, but checking here
+        // assures we have the latest data, and the in-memory gRPC interface
+        // should be fast.
+        let notes = self
+            .view
+            .unspent_notes_by_address_and_asset(self.fvk.account_group_id())
+            .await?;
+
+        let (mut reserves_1, mut reserves_2) = (Amount::from(0u32), Amount::from(0u32));
+
+        // Find the balance we have for the two assets in the market.
+        if let Some(notes) = notes.get(&AddressIndex::from(self.account)) {
+            let (asset_1, asset_2) = (market.start.clone(), market.end.clone());
+
+            for (asset_id, note_records) in notes {
+                if *asset_id == asset_1.id() {
+                    for note_record in note_records {
+                        reserves_1 += note_record.note.amount();
+                    }
+                }
+                if *asset_id == asset_2.id() {
+                    for note_record in note_records {
+                        reserves_2 += note_record.note.amount();
+                    }
+                }
+            }
+
+            tracing::debug!(
+                ?asset_1,
+                ?reserves_1,
+                ?asset_2,
+                ?reserves_2,
+                "found balance for assets"
+            );
+        }
+
+        Ok((reserves_1, reserves_2))
+    }
+
+    async fn pd_channel(&self) -> anyhow::Result<Channel> {
+        match self.pd_url.scheme() {
+            "http" => Ok(Channel::from_shared(self.pd_url.to_string())?
+                .connect()
+                .await?),
+            "https" => Ok(Channel::from_shared(self.pd_url.to_string())?
+                .tls_config(ClientTlsConfig::new())?
+                .connect()
+                .await?),
+            other => Err(anyhow::anyhow!("unknown url scheme {other}"))
+                .with_context(|| format!("could not connect to {}", self.pd_url)),
+        }
+    }
+
+    pub async fn specific_client(
+        &self,
+    ) -> Result<SpecificQueryServiceClient<Channel>, anyhow::Error> {
+        let channel = self.pd_channel().await?;
+        Ok(SpecificQueryServiceClient::new(channel))
     }
 }
