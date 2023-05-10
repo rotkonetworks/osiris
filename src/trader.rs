@@ -254,6 +254,8 @@ where
         // Pay no fee for the transaction.
         let fee = Fee::from_staking_token_amount(0u32.into());
 
+        // Sometimes building the plan can fail with an error, because there were no actions
+        // present. There's not an easy way to check this in the planner API right now.
         let final_plan = plan
             .fee(fee)
             .plan(
@@ -261,16 +263,7 @@ where
                 self.fvk.account_group_id(),
                 AddressIndex::from(self.account),
             )
-            .await;
-
-        // Sometimes building the plan can fail with an error, because there were no actions
-        // present. There's not an easy way to check this in the planner API right now.
-        if let Err(e) = final_plan {
-            tracing::debug!(?e, "failed to build plan");
-            return Ok(());
-        }
-
-        let final_plan = final_plan.unwrap();
+            .await?;
 
         // 2. Authorize and build the transaction.
         let auth_data = self
