@@ -41,14 +41,11 @@ connect to (the default is the hosted Penumbra default testnet). Use the `--help
 
 ## Re-deploying after a testnet release
 When we deploy a new testnet, we must bounce Osiris to keep the market-making working.
-
-Currently, Osiris is hosted as another service alongside Galileo.
-
 The steps are:
 
 ```
-# Log into galileo host
-ssh <your_first_name>@galileo.penumbra.zone
+# Log into osiris host
+ssh <your_first_name>@osiris.penumbra.zone
 # Stop running service
 sudo systemctl stop osiris
 
