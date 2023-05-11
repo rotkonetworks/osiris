@@ -342,28 +342,30 @@ where
             .best_bid
             .parse::<f64>()
             .expect("bad f64 in binance api return");
-        let mid_price = (best_ask + best_bid) / 2.0;
+
+        // a 1000x scaling factor is applied to keep some of the decimal
+        // TODO: this is bad lol
+        let scaling_factor = 1000.0;
+        let mid_price = scaling_factor * (best_ask + best_bid) / 2.0;
 
         // Calculate spread:
-        let difference = (best_ask - best_bid).abs();
+        let difference = scaling_factor * (best_ask - best_bid).abs();
         let fraction = difference / mid_price;
         // max of 50% fee
         let spread = (fraction * 100.0 * 100.0).clamp(0.0, 5000.0);
+
+        let numer_scaler = market.start.unit_amount().value();
+        let denom_scaler = market.end.unit_amount().value();
 
         let pos = Position::new(
             OsRng,
             market.into_directed_trading_pair(),
             spread as u32,
-            // 10000x scaling factor is applied in case values are small
-            // p is always 10000
-            10000u32.into(),
-            // and price is expressed in units of asset 2
-            ((mid_price * 10000.0) as u64).into(),
-            // put up half the available reserves
-            Reserves {
-                r1: reserves_1 / 2u32.into(),
-                r2: reserves_2 / 2u32.into(),
-            },
+            // p is always the scaling value
+            (scaling_factor as u128 * denom_scaler).into(),
+            // price is expressed in units of asset 2
+            (mid_price as u128 * numer_scaler).into(),
+            reserves,
         );
 
         tracing::trace!(?pos, "opening position");
