@@ -168,6 +168,8 @@ where
                         .expect("missing symbol -> DirectedUnitPair mapping");
 
                     // Create a plan that will contain all LP management operations based on this quote.
+                    // TODO: could move this outside the loop, but it's a little easier to debug
+                    // the plans like this for now
                     let plan = &mut Planner::new(OsRng);
 
                     // Find the spendable balance for each asset in the market.
@@ -207,8 +209,6 @@ where
                         .await?;
 
                     // Open liquidity position with half of the reserves we have available
-                    // TODO: do something more sophisticated with the xy=k approximation here
-                    // maybe
                     self.open_liquidity_position(
                         market,
                         reserves_1,
@@ -218,11 +218,14 @@ where
                     )
                     .await?;
 
+                    // TODO: it's possible to immediately close this position within the same block
+                    // however what if we don't get updates every block?
+
                     // Finalize and submit the transaction plan.
                     match self.finalize_and_submit(plan).await {
                         Ok(_) => {}
                         Err(e) => {
-                            tracing::info!(
+                            tracing::error!(
                                 ?e,
                                 ?market,
                                 ?current_height,
@@ -322,6 +325,10 @@ where
         mut plan: &mut Planner<OsRng>,
     ) -> anyhow::Result<()> {
         // put up half the available reserves
+        // TODO: this isn't quite right as it's half the _remaining_ reserves
+        // and there might be multiple positions involving reserves with the same
+        // assets. so we should really have _half the total available reserves divided
+        // amongst the positions involving that asset_
         let reserves = Reserves {
             r1: reserves_1 / 2u32.into(),
             r2: reserves_2 / 2u32.into(),
@@ -343,10 +350,16 @@ where
             .parse::<f64>()
             .expect("bad f64 in binance api return");
 
-        // a 1000x scaling factor is applied to keep some of the decimal
+        // a 1_000scaling factor is applied to keep some of the decimal
         // TODO: this is bad lol
-        let scaling_factor = 1000.0;
-        let mid_price = scaling_factor * (best_ask + best_bid) / 2.0;
+        let mut scaling_factor = 1_000.0;
+        let mut mid_price = scaling_factor * (best_ask + best_bid) / 2.0;
+
+        // apply more scaling factor if necessary
+        while mid_price < 1.0 {
+            scaling_factor *= 1_000.0;
+            mid_price *= 1_000.0;
+        }
 
         // Calculate spread:
         let difference = scaling_factor * (best_ask - best_bid).abs();
