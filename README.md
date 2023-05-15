@@ -23,7 +23,7 @@ See [GH29](https://github.com/penumbra-zone/galileo/issues/29) for details.
 ## Running it
 
 ```bash
-RUST_LOG=osiris=info cargo run --release serve ETH BTC USD ATOM
+RUST_LOG=osiris=info cargo run --release serve BTC USD ATOM
 ```
 
 This will monitor the [Binance websockets API](https://developers.binance.com/docs/binance-trading-api/websocket_api) for
