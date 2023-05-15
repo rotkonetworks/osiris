@@ -364,8 +364,8 @@ where
         // Calculate spread:
         let difference = scaling_factor * (best_ask - best_bid).abs();
         let fraction = difference / mid_price;
-        // max of 50% fee
-        let spread = (fraction * 100.0 * 100.0).clamp(0.0, 5000.0);
+        // max of 50% fee, min of 100 bps (1%)
+        let spread = (fraction * 100.0 * 100.0).clamp(100.0, 5000.0);
 
         let numer_scaler = market.start.unit_amount().value();
         let denom_scaler = market.end.unit_amount().value();
