@@ -4,7 +4,7 @@ use anyhow::Context;
 use binance::model::BookTickerEvent;
 use futures::{StreamExt, TryStreamExt};
 use penumbra_crypto::{
-    asset::Denom,
+    asset::DenomMetadata,
     dex::{
         lp::{
             position::{self, Position},
@@ -417,7 +417,7 @@ where
             .unspent_notes_by_address_and_asset(self.fvk.account_group_id())
             .await?;
 
-        fn is_closed_position_nft(denom: &Denom) -> bool {
+        fn is_closed_position_nft(denom: &DenomMetadata) -> bool {
             let prefix = format!("lpnft_closed_");
 
             denom.starts_with(&prefix)
@@ -483,7 +483,7 @@ where
             .unspent_notes_by_address_and_asset(self.fvk.account_group_id())
             .await?;
 
-        fn is_opened_position_nft(denom: &Denom) -> bool {
+        fn is_opened_position_nft(denom: &DenomMetadata) -> bool {
             let prefix = format!("lpnft_opened_");
 
             denom.starts_with(&prefix)
