@@ -13,6 +13,7 @@ WORKDIR /app/osiris
 RUN cargo build --release
 
 FROM docker.io/debian:stable-slim
+RUN apt-get update && apt-get install -y ca-certificates
 RUN groupadd --gid 1000 penumbra \
         && useradd -m -d /home/penumbra -g 1000 -u 1000 penumbra
 COPY --from=builder /app/osiris/target/release/osiris /usr/bin/osiris
