@@ -23,7 +23,7 @@ See [GH29](https://github.com/penumbra-zone/galileo/issues/29) for details.
 ## Running it
 
 ```bash
-RUST_LOG=osiris=info cargo run --release serve BTC USD ATOM
+RUST_LOG=osiris=debug cargo run --release serve BTC USD ATOM
 ```
 
 This will monitor the [Binance websockets API](https://developers.binance.com/docs/binance-trading-api/websocket_api) for
@@ -40,46 +40,21 @@ A variety of options are available, including adjusting replication timing, and 
 connect to (the default is the hosted Penumbra default testnet). Use the `--help` option for more details.
 
 ## Re-deploying after a testnet release
-When we deploy a new testnet, we must bounce Osiris to keep the market-making working.
-The steps are:
+When we deploy a new testnet, Osiris will need to be restarted in order to keep working.
+This happens automatically, due to the restart policy governing its deployment on the
+testnet cluster. If you need to bounce Osiris manually, for instance to get
+a new container version running against preview quickly, do the following:
 
 ```
-# Log into osiris host
-ssh <your_first_name>@osiris.penumbra.zone
-# Stop running service
-sudo systemctl stop osiris
+# For the preview deployment:
+kubectl rollout restart deployment osiris-preview
 
-# Switch to unprivileged user
-sudo su -l www-data -s /bin/bash
-
-# Reset the client state for the new testnet
-cd ~/penumbra
-git fetch --tags
-git checkout <latest_tag>
-cargo run --release --bin pcli view reset
-
-# Update osiris's source code
-cd ~/osiris
-git pull origin main
-cargo update
-cargo build --release
-
-# Return to normal user
-exit
-
-# Edit the catch-up url arg
-sudo vim /etc/systemd/system/osiris.service
-# Start Osiris again:
-sudo systemctl daemon-reload
-sudo systemctl restart osiris
-
-# Confirm that Osiris is creating positions via pcli
+# For the testnet deployment:
+kubectl rollout restart deployment osiris-testnet
 
 # View logs for Osiris at any time with:
-sudo journalctl -af -u osiris
+kubectl logs -f $(kubectl get pods -o name -l app.kubernetes.io/instance=osiris-preview)
 ```
-
-These steps should be performed on release day, immediately after publishing the tag.
 
 # License
 
