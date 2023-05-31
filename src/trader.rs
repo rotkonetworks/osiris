@@ -3,19 +3,15 @@ use std::{collections::BTreeMap, future, str::FromStr};
 use anyhow::Context;
 use binance::model::BookTickerEvent;
 use futures::{StreamExt, TryStreamExt};
-use penumbra_crypto::{
-    asset::DenomMetadata,
-    dex::{
-        lp::{
-            position::{self, Position},
-            Reserves,
-        },
-        DirectedUnitPair,
-    },
-    keys::AddressIndex,
-    Amount, Fee, FullViewingKey,
-};
+use penumbra_crypto::{asset::DenomMetadata, keys::AddressIndex, Amount, Fee, FullViewingKey};
 use penumbra_custody::{AuthorizeRequest, CustodyClient};
+use penumbra_dex::{
+    lp::{
+        position::{self, Position},
+        Reserves,
+    },
+    DirectedUnitPair,
+};
 use penumbra_proto::client::v1alpha1::LiquidityPositionsByPriceRequest;
 use penumbra_proto::client::v1alpha1::{
     specific_query_service_client::SpecificQueryServiceClient, LiquidityPositionsRequest,
