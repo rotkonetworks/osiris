@@ -247,8 +247,6 @@ where
             }
             self.actions = actions;
         }
-
-        Ok(())
     }
 
     async fn finalize_and_submit(&mut self, plan: &mut Planner<OsRng>) -> anyhow::Result<()> {
@@ -318,7 +316,7 @@ where
         reserves_1: Amount,
         reserves_2: Amount,
         quote: BookTickerEvent,
-        mut plan: &mut Planner<OsRng>,
+        plan: &mut Planner<OsRng>,
     ) -> anyhow::Result<()> {
         // put up half the available reserves
         // TODO: this isn't quite right as it's half the _remaining_ reserves
@@ -378,7 +376,7 @@ where
         );
 
         tracing::trace!(?pos, "opening position");
-        plan = plan.position_open(pos);
+        _ = plan.position_open(pos);
 
         Ok(())
     }
