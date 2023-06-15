@@ -1,72 +1,65 @@
 name: Rust CI
-on: [push, pull_request]
-
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  # Run periodically to check for breakage, since we seldom update the osiris repo.
+  # This allows us to determine approximately when a breaking change was merged into
+  # the penumbra repo, so we can fix it ahead of a testnet release.
+  schedule:
+    - cron: "25 18 * * *"
+  pull_request: {}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  check:
-    name: Check
-    runs-on: ubuntu-latest
+  build:
+    name: Build
+    runs-on: buildjet-16vcpu-ubuntu-2004
     steps:
       - name: Checkout osiris
-        uses: actions/checkout@v2
-        with:
-          path: osiris
+        uses: actions/checkout@v3
 
       - name: Check out penumbra repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           repository: penumbra-zone/penumbra
-          path: penumbra
+          path: penumbra-repo
           lfs: true
 
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
+      - name: Move penumbra repo to relative path
+        run: mv penumbra-repo ../penumbra
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            osiris
-            penumbra
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-      # We cannot use the GH action because it doesn't working directory:
-      # support custom working dirs.
-      # - uses: actions-rs/cargo@v1
-      - name: cargo check
-        run:
-          cargo check
-        working-directory: osiris
+      - name: Configure rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run cargo build release
+        run: cargo build --release
+        env:
+          # The `-D warnings` option causes an error on warnings;
+          # we must duplicate the rustflags from penumbra repo's `.cargo/config.toml`.
+          RUSTFLAGS: "-D warnings --cfg tokio_unstable"
 
   fmt:
     name: Rustfmt
-    runs-on: ubuntu-latest
+    runs-on: buildjet-8vcpu-ubuntu-2004
     steps:
       - name: Checkout osiris
-        uses: actions/checkout@v2
-        with:
-          path: osiris
+        uses: actions/checkout@v3
 
-      - name: Check out penumbra repo
-        uses: actions/checkout@v2
-        with:
-          repository: penumbra-zone/penumbra
-          path: penumbra
-          lfs: true
+      # N.B. `cargo fmt` does not require relpath dependencies to be present,
+      # so we don't need to clone the penumbra repo here.
 
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            osiris
-            penumbra
+      - name: Configure rust cache
+        uses: Swatinem/rust-cache@v2
 
-      - name: cargo fmt
-        run:
-          cargo fmt --all -- --check
-        working-directory: osiris
+      - name: Run cargo fmt
+        run: cargo fmt --all -- --check
