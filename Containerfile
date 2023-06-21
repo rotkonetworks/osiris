@@ -1,7 +1,7 @@
 # Pull from Penumbra container, so we can grab a recent `pcli` without
 # needing to compile from source.
 FROM ghcr.io/penumbra-zone/penumbra:main AS penumbra
-FROM docker.io/rust AS builder
+FROM docker.io/rust:1-bullseye AS builder
 
 RUN apt-get update && apt-get install -y \
         libssl-dev git-lfs clang
@@ -12,7 +12,7 @@ COPY . /app/osiris
 WORKDIR /app/osiris
 RUN cargo build --release
 
-FROM docker.io/debian:stable-slim
+FROM docker.io/debian:bullseye-slim
 RUN apt-get update && apt-get install -y ca-certificates
 RUN groupadd --gid 1000 penumbra \
         && useradd -m -d /home/penumbra -g 1000 -u 1000 penumbra
