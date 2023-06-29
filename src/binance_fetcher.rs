@@ -83,6 +83,7 @@ impl BinanceFetcher {
             match e {
                 err => {
                     tracing::error!(?err, "error in web socket event loop");
+                    anyhow::bail!(format!("Failed in web socket loop, exiting"));
                 }
             }
         }
