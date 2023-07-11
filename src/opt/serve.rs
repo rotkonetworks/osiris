@@ -34,7 +34,7 @@ pub struct Serve {
     /// The source address index in the wallet to use when dispensing tokens (if unspecified uses
     /// any funds available).
     #[clap(long = "source", default_value = "0")]
-    source_address: penumbra_crypto::keys::AddressIndex,
+    source_address: penumbra_keys::keys::AddressIndex,
     /// The websockets address to access the Binance API on.
     #[clap(long = "binance_ws", default_value = "wss://stream.binance.us:9443")]
     binance_ws: Url,
