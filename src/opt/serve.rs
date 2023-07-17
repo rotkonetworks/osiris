@@ -29,7 +29,7 @@ pub struct Serve {
     #[clap(long, short)]
     data_dir: Option<PathBuf>,
     /// The URL of the pd gRPC endpoint on the remote node.
-    #[clap(short, long, default_value = "http://testnet.penumbra.zone:8080")]
+    #[clap(short, long, default_value = "https://grpc.testnet.penumbra.zone")]
     node: Url,
     /// The source address index in the wallet to use when dispensing tokens (if unspecified uses
     /// any funds available).
