@@ -123,6 +123,10 @@ where
 
     /// Run the trader.
     pub async fn run(mut self) -> anyhow::Result<()> {
+        let trader_span = tracing::debug_span!("trader");
+        // TODO figure out why this span doesn't display in logs
+        let _ = trader_span.enter();
+        tracing::debug!("running trader functionality");
         // Doing this loop without any shutdown signal doesn't exactly
         // provide a clean shutdown, but it works for now.
         loop {
@@ -136,6 +140,7 @@ where
                 if rx.has_changed().unwrap() {
                     let bte = rx.borrow_and_update().clone();
                     if bte.is_none() {
+                        tracing::debug!(?bte, "found an empty ticket event");
                         continue;
                     }
                     let book_ticker_event = bte.unwrap();
@@ -148,7 +153,7 @@ where
                         .await?
                         .sync_height;
                     if let Some(last_updated_height) = self.last_updated_height.get(symbol) {
-                        if !(current_height > *last_updated_height) {
+                        if current_height <= *last_updated_height {
                             tracing::debug!(?symbol, "skipping symbol, already updated this block");
                             continue;
                         }
@@ -415,7 +420,7 @@ where
             .await?;
 
         fn is_closed_position_nft(denom: &DenomMetadata) -> bool {
-            let prefix = format!("lpnft_closed_");
+            let prefix = "lpnft_closed_".to_string();
 
             denom.starts_with(&prefix)
         }
@@ -481,7 +486,7 @@ where
             .await?;
 
         fn is_opened_position_nft(denom: &DenomMetadata) -> bool {
-            let prefix = format!("lpnft_opened_");
+            let prefix = "lpnft_opened_".to_string();
 
             denom.starts_with(&prefix)
         }
