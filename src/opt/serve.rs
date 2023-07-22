@@ -61,11 +61,11 @@ impl Serve {
 
         // the binance-rs library really hates trailing slashes here
         let mut binance_rest = String::from(self.binance_rest);
-        if binance_rest.ends_with("/") {
+        if binance_rest.ends_with('/') {
             binance_rest.pop();
         }
         let mut binance_ws = String::from(self.binance_ws);
-        if binance_ws.ends_with("/") {
+        if binance_ws.ends_with('/') {
             binance_ws.pop();
         }
         let binance_config = Config {
@@ -83,9 +83,10 @@ impl Serve {
                 Err(_) => tracing::trace!("Invalid symbol: {}", permutation),
             }
         }
-
         tracing::debug!(?symbols, "found valid trading symbols in Binance API");
 
+        let penumbra_config = tracing::debug_span!("penumbra-config").entered();
+        tracing::debug!("importing wallet material");
         // Look up the path to the view state file per platform, creating the directory if needed
         let data_dir = self.data_dir.unwrap_or_else(|| {
             ProjectDirs::from("zone", "penumbra", "pcli")
@@ -106,30 +107,31 @@ impl Serve {
 
         let fvk = wallet.spend_key.full_viewing_key().clone();
 
+        // Wait to synchronize the chain before doing anything else.
+        tracing::info!(%self.node, "starting initial sync: ");
         // Instantiate an in-memory view service.
         let view_storage =
             penumbra_view::Storage::load_or_initialize(None::<&str>, &fvk, self.node.clone())
                 .await?;
         let view_service = ViewService::new(view_storage, self.node.clone()).await?;
-
         // Now build the view and custody clients, doing gRPC with ourselves
         let mut view = ViewProtocolServiceClient::new(ViewProtocolServiceServer::new(view_service));
 
-        // Wait to synchronize the chain before doing anything else.
-        tracing::info!(
-            "starting initial sync: please wait for sync to complete before requesting tokens"
-        );
         ViewClient::status_stream(&mut view, fvk.account_group_id())
             .await?
             .try_collect::<Vec<_>>()
             .await?;
         // From this point on, the view service is synchronized.
-        tracing::info!("initial sync complete");
+        tracing::info!(%self.node, "initial sync complete");
+        penumbra_config.exit();
 
+        let trader_config = tracing::debug_span!("trader-config").entered();
         // Instantiate the trader (manages the bot's portfolio based on MPSC messages containing price quotes)
         let (quotes_sender, trader) =
             Trader::new(0, fvk, view, custody, symbols.clone(), self.node);
+        trader_config.exit();
 
+        let _binance_span = tracing::debug_span!("binance-fetcher").entered();
         // Instantiate the Binance fetcher (responsible for fetching binance API data and sending along to the trader)
         let binance_fetcher = BinanceFetcher::new(quotes_sender, symbols, binance_config);
 
