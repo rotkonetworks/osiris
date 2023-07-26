@@ -52,9 +52,9 @@ jobs:
           push: true
           # We include a tag with the associated Penumbra, e.g. `penumbra-v0.57.0`.
           # This is important to maintain compatibility with a long-running testnet.
-          tags: ${{ steps.meta.outputs.tags }},penumbra-${{ inputs.penumbra_version }}
+          tags: ${{ steps.meta.outputs.tags }},penumbra-${{ inputs.penumbra_version || "main" }}
           build-args: |
-            PENUMBRA_VERSION=${{ inputs.penumbra_version }}
+            PENUMBRA_VERSION=${{ inputs.penumbra_version || "main" }}
           # We disable layer caching to ensure that the most recent penumbra repo is used.
           # Otherwise, the static git url for the repo will always result in a cache hit.
           # TODO: update with dynamic build-args using e.g. current date to bust cache.
