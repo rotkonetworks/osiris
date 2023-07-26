@@ -1,14 +1,13 @@
-ARG PENUMBRA_VERSION=main
-# ARG PENUMBRA_VERSION=v0.54.1
 # Pull from Penumbra container, so we can grab a recent `pcli` without
 # needing to compile from source.
-FROM ghcr.io/penumbra-zone/penumbra:${PENUMBRA_VERSION} AS penumbra
+FROM ghcr.io/penumbra-zone/penumbra:main AS penumbra
 FROM docker.io/rust:1-bullseye AS builder
 
-ARG PENUMBRA_VERSION=main
 RUN apt-get update && apt-get install -y \
         libssl-dev git-lfs clang
-RUN git clone --depth 1 --branch "${PENUMBRA_VERSION}" https://github.com/penumbra-zone/penumbra /app/penumbra
+# Shallow clone since we only want most recent HEAD; this should change
+# if/when we want to support specific refs, such as release tags, for Penumbra deps.
+RUN git clone --depth=1 https://github.com/penumbra-zone/penumbra /app/penumbra
 COPY . /app/osiris
 WORKDIR /app/osiris
 RUN cargo build --release
