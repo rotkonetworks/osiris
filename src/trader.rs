@@ -332,8 +332,10 @@ where
         // assets. so we should really have _half the total available reserves divided
         // amongst the positions involving that asset_
         let reserves = Reserves {
-            r1: reserves_1 / 2u32.into(),
-            r2: reserves_2 / 2u32.into(),
+            // We need to clamp the reserves to 80 bits, which is the max the node
+            // software can handle.
+            r1: (reserves_1 / 2u32.into()).clamp(0u32.into(), (u128::pow(2, 80) - 1).into()),
+            r2: (reserves_2 / 2u32.into()).clamp(0u32.into(), (u128::pow(2, 80) - 1).into()),
         };
 
         if reserves.r1 == 0u32.into() && reserves.r2 == 0u32.into() {
