@@ -14,7 +14,7 @@ on:
     tags:
       - '**'
 jobs:
-  build-and-push-penumbra:
+  osiris:
     runs-on: buildjet-16vcpu-ubuntu-2004
     permissions:
       contents: read
@@ -52,7 +52,7 @@ jobs:
           push: true
           # We include a tag with the associated Penumbra, e.g. `penumbra-v0.57.0`.
           # This is important to maintain compatibility with a long-running testnet.
-          tags: ${{ steps.meta.outputs.tags }},penumbra-${{ github.event.inputs.penumbra_version || 'main' }}
+          tags: ${{ steps.meta.outputs.tags }},ghcr.io/penumbra-zone/osiris:penumbra-${{ github.event.inputs.penumbra_version || 'main' }}
           build-args: |
             PENUMBRA_VERSION=${{ github.event.inputs.penumbra_version || 'main' }}
           # We disable layer caching to ensure that the most recent penumbra repo is used.
