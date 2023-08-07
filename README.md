@@ -40,10 +40,23 @@ A variety of options are available, including adjusting replication timing, and 
 connect to (the default is the hosted Penumbra default testnet). Use the `--help` option for more details.
 
 ## Re-deploying after a testnet release
-When we deploy a new testnet, Osiris will need to be restarted in order to keep working.
-This happens automatically, due to the restart policy governing its deployment on the
-testnet cluster. If you need to bounce Osiris manually, for instance to get
-a new container version running against preview quickly, do the following:
+During deploy of a new testnet, Osiris will automatically be restarted, but
+it won't be using a new image built from the latest code. Sometimes that's OK,
+but we aim to keep the deployments in sync, so the dependencies match.
+Perform these steps manually after deploying a new testnet:
+
+1. Rebuild the Osiris container via [GHA](https://github.com/penumbra-zone/osiris/actions),
+   passing in the Penumbra tag version to build from, e.g. `v0.58.0`.
+2. Wait for the container build to complete, then run:
+   `kubectl set image deployments -l app.kubernetes.io/instance=osiris-testnet osiris=penumbra-v0.58.0`
+   substituting the correct version in the tag name.
+
+Eventually we should automate these steps so they're performed automatically as part of a release.
+
+# Bouncing deployments
+Restarting the Osiris service will cause the deployment to pull for a new container image.
+If a newer container image exists in the remote repository (`ghcr.io/penumbra-zone/osiris`),
+that image will be used. You must manually build a new image via the [GHA setup](https://github.com/penumbra-zone/osiris/actions).
 
 ```
 # For the preview deployment:
