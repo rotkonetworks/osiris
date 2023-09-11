@@ -16,7 +16,9 @@ penumbra-keys = { path = "../penumbra/crates/core/keys" }
 penumbra-dex = { path = "../penumbra/crates/core/component/dex" }
 penumbra-custody = { path = "../penumbra/crates/custody" }
 penumbra-view = { path = "../penumbra/crates/view" }
-penumbra-transaction = { path = "../penumbra/crates/core/transaction", features = ["download-proving-keys"] }
+penumbra-transaction = { path = "../penumbra/crates/core/transaction", features = [
+    "download-proving-keys",
+] }
 
 # External dependencies
 anyhow = "1"
@@ -34,7 +36,7 @@ rand = "0.8"
 reqwest = "0.11"
 indexmap = "1.8"
 chrono = { version = "0.4", features = ["serde"] }
-tonic = { version = "0.8.1", features = ["tls-webpki-roots", "tls"] }
-serde = { version = "1", features = ["derive"]}
+tonic = { version = "0.9", features = ["tls-webpki-roots", "tls"] }
+serde = { version = "1", features = ["derive"] }
 binance = { git = "https://github.com/wisespace-io/binance-rs.git" }
 url = "2"
