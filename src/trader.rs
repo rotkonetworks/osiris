@@ -15,9 +15,9 @@ use penumbra_dex::{
 use penumbra_fee::Fee;
 use penumbra_keys::keys::{AddressIndex, FullViewingKey};
 use penumbra_num::Amount;
-use penumbra_proto::client::v1alpha1::LiquidityPositionsByPriceRequest;
-use penumbra_proto::client::v1alpha1::{
-    specific_query_service_client::SpecificQueryServiceClient, LiquidityPositionsRequest,
+use penumbra_proto::core::component::dex::v1alpha1::query_service_client::QueryServiceClient as DexQueryServiceClient;
+use penumbra_proto::core::component::dex::v1alpha1::{
+    LiquidityPositionsByPriceRequest, LiquidityPositionsRequest,
 };
 use penumbra_view::{Planner, ViewClient};
 use rand::rngs::OsRng;
@@ -552,7 +552,7 @@ where
         &self,
         market: &DirectedUnitPair,
     ) -> anyhow::Result<Vec<Position>> {
-        let mut client = self.specific_client().await?;
+        let mut client = self.dex_client().await?;
 
         // There's no queryable index for non-open positions,
         // so we need to query _all_ known positions and then filter :(
@@ -594,7 +594,7 @@ where
         &self,
         market: &DirectedUnitPair,
     ) -> anyhow::Result<Vec<Position>> {
-        let mut client = self.specific_client().await?;
+        let mut client = self.dex_client().await?;
 
         // Check forward direction:
         let positions_stream =
@@ -715,10 +715,8 @@ where
         }
     }
 
-    pub async fn specific_client(
-        &self,
-    ) -> Result<SpecificQueryServiceClient<Channel>, anyhow::Error> {
+    pub async fn dex_client(&self) -> Result<DexQueryServiceClient<Channel>, anyhow::Error> {
         let channel = self.pd_channel().await?;
-        Ok(SpecificQueryServiceClient::new(channel))
+        Ok(DexQueryServiceClient::new(channel))
     }
 }
