@@ -8,6 +8,13 @@ on:
         description: 'Git ref (e.g. branch or tag) of Penumbra repo for building'
         default: "main"
         required: true
+  # Support triggering builds via a different repository, i.e. penumbra-zone/penumbra.
+  repository_dispatch:
+    inputs:
+      penumbra_version:
+        description: 'Git ref (e.g. branch or tag) of Penumbra repo for building'
+        default: "main"
+        required: true
   push:
     branches:
       - main
