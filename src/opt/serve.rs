@@ -117,7 +117,7 @@ impl Serve {
         // Now build the view and custody clients, doing gRPC with ourselves
         let mut view = ViewProtocolServiceClient::new(ViewProtocolServiceServer::new(view_service));
 
-        ViewClient::status_stream(&mut view, fvk.account_group_id())
+        ViewClient::status_stream(&mut view, fvk.wallet_id())
             .await?
             .try_collect::<Vec<_>>()
             .await?;

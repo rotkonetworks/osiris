@@ -147,11 +147,7 @@ where
                     tracing::debug!("trader received event: {:?}", book_ticker_event);
 
                     // Only update positions for a given symbol at most once per block
-                    let current_height = self
-                        .view
-                        .status(self.fvk.account_group_id())
-                        .await?
-                        .sync_height;
+                    let current_height = self.view.status(self.fvk.wallet_id()).await?.sync_height;
                     if let Some(last_updated_height) = self.last_updated_height.get(symbol) {
                         if current_height <= *last_updated_height {
                             tracing::debug!(?symbol, "skipping symbol, already updated this block");
@@ -267,7 +263,7 @@ where
             .fee(fee)
             .plan(
                 &mut self.view,
-                self.fvk.account_group_id(),
+                self.fvk.wallet_id(),
                 AddressIndex::from(self.account),
             )
             .await?;
@@ -277,17 +273,14 @@ where
             .custody
             .authorize(AuthorizeRequest {
                 plan: final_plan.clone(),
-                account_group_id: Some(self.fvk.account_group_id()),
+                wallet_id: Some(self.fvk.wallet_id()),
                 pre_authorizations: Vec::new(),
             })
             .await?
             .data
             .ok_or_else(|| anyhow::anyhow!("no auth data"))?
             .try_into()?;
-        let witness_data = self
-            .view
-            .witness(self.fvk.account_group_id(), &final_plan)
-            .await?;
+        let witness_data = self.view.witness(self.fvk.wallet_id(), &final_plan).await?;
         let unauth_tx = final_plan
             .build_concurrent(OsRng, &self.fvk, witness_data)
             .await?;
@@ -418,7 +411,7 @@ where
         // We need to use the list of our notes to determine which positions we own.
         let notes = self
             .view
-            .unspent_notes_by_address_and_asset(self.fvk.account_group_id())
+            .unspent_notes_by_address_and_asset(self.fvk.wallet_id())
             .await?;
 
         fn is_closed_position_nft(denom: &DenomMetadata) -> bool {
@@ -484,7 +477,7 @@ where
         // We need to use the list of our notes to determine which positions we own.
         let notes = self
             .view
-            .unspent_notes_by_address_and_asset(self.fvk.account_group_id())
+            .unspent_notes_by_address_and_asset(self.fvk.wallet_id())
             .await?;
 
         fn is_opened_position_nft(denom: &DenomMetadata) -> bool {
@@ -667,7 +660,7 @@ where
         // should be fast.
         let notes = self
             .view
-            .unspent_notes_by_address_and_asset(self.fvk.account_group_id())
+            .unspent_notes_by_address_and_asset(self.fvk.wallet_id())
             .await?;
 
         let (mut reserves_1, mut reserves_2) = (Amount::from(0u32), Amount::from(0u32));
