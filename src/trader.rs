@@ -147,7 +147,11 @@ where
                     tracing::debug!("trader received event: {:?}", book_ticker_event);
 
                     // Only update positions for a given symbol at most once per block
-                    let current_height = self.view.status(self.fvk.wallet_id()).await?.sync_height;
+                    let current_height = self
+                        .view
+                        .status(self.fvk.wallet_id())
+                        .await?
+                        .partial_sync_height;
                     if let Some(last_updated_height) = self.last_updated_height.get(symbol) {
                         if current_height <= *last_updated_height {
                             tracing::debug!(?symbol, "skipping symbol, already updated this block");
@@ -253,13 +257,13 @@ where
         }
     }
 
-    async fn finalize_and_submit(&mut self, plan: &mut Planner<OsRng>) -> anyhow::Result<()> {
+    async fn finalize_and_submit(&mut self, planner: &mut Planner<OsRng>) -> anyhow::Result<()> {
         // Pay no fee for the transaction.
         let fee = Fee::from_staking_token_amount(0u32.into());
 
         // Sometimes building the plan can fail with an error, because there were no actions
         // present. There's not an easy way to check this in the planner API right now.
-        let final_plan = plan
+        let plan = planner
             .fee(fee)
             .plan(
                 &mut self.view,
@@ -272,20 +276,17 @@ where
         let auth_data = self
             .custody
             .authorize(AuthorizeRequest {
-                plan: final_plan.clone(),
-                wallet_id: Some(self.fvk.wallet_id()),
+                plan: plan.clone(),
                 pre_authorizations: Vec::new(),
             })
             .await?
             .data
             .ok_or_else(|| anyhow::anyhow!("no auth data"))?
             .try_into()?;
-        let witness_data = self.view.witness(self.fvk.wallet_id(), &final_plan).await?;
-        let unauth_tx = final_plan
-            .build_concurrent(OsRng, &self.fvk, witness_data)
+        let witness_data = self.view.witness(self.fvk.wallet_id(), &plan).await?;
+        let tx = plan
+            .build_concurrent(&self.fvk, &witness_data, &auth_data)
             .await?;
-
-        let tx = unauth_tx.authorize(&mut OsRng, &auth_data)?;
 
         // 3. Broadcast the transaction and wait for confirmation.
         self.view.broadcast_transaction(tx, true).await?;
