@@ -237,7 +237,7 @@ where
                                 ?plan,
                                 "failed to update position"
                             );
-                            continue;
+                            return Err(e);
                         }
                     };
 
