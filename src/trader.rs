@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, future, str::FromStr};
 use anyhow::Context;
 use binance::model::BookTickerEvent;
 use futures::{StreamExt, TryStreamExt};
-use penumbra_asset::asset::DenomMetadata;
+use penumbra_asset::asset::Metadata;
 use penumbra_custody::{AuthorizeRequest, CustodyClient};
 use penumbra_dex::{
     lp::{
@@ -12,11 +12,10 @@ use penumbra_dex::{
     },
     DirectedUnitPair,
 };
-use penumbra_fee::Fee;
 use penumbra_keys::keys::{AddressIndex, FullViewingKey};
 use penumbra_num::Amount;
-use penumbra_proto::core::component::dex::v1alpha1::query_service_client::QueryServiceClient as DexQueryServiceClient;
-use penumbra_proto::core::component::dex::v1alpha1::{
+use penumbra_proto::core::component::dex::v1::query_service_client::QueryServiceClient as DexQueryServiceClient;
+use penumbra_proto::core::component::dex::v1::{
     LiquidityPositionsByPriceRequest, LiquidityPositionsRequest,
 };
 use penumbra_view::{Planner, ViewClient};
@@ -147,11 +146,7 @@ where
                     tracing::debug!("trader received event: {:?}", book_ticker_event);
 
                     // Only update positions for a given symbol at most once per block
-                    let current_height = self
-                        .view
-                        .status(self.fvk.wallet_id())
-                        .await?
-                        .partial_sync_height;
+                    let current_height = self.view.status().await?.partial_sync_height;
                     if let Some(last_updated_height) = self.last_updated_height.get(symbol) {
                         if current_height <= *last_updated_height {
                             tracing::debug!(?symbol, "skipping symbol, already updated this block");
@@ -258,18 +253,15 @@ where
     }
 
     async fn finalize_and_submit(&mut self, planner: &mut Planner<OsRng>) -> anyhow::Result<()> {
-        // Pay no fee for the transaction.
-        let fee = Fee::from_staking_token_amount(0u32.into());
-
         // Sometimes building the plan can fail with an error, because there were no actions
         // present. There's not an easy way to check this in the planner API right now.
+
+        // Fetch latest gas prices.
+        let gas_prices = self.view.gas_prices().await?;
+
+        planner.set_gas_prices(gas_prices);
         let plan = planner
-            .fee(fee)
-            .plan(
-                &mut self.view,
-                self.fvk.wallet_id(),
-                AddressIndex::from(self.account),
-            )
+            .plan(&mut self.view, AddressIndex::from(self.account))
             .await?;
 
         // 2. Authorize and build the transaction.
@@ -283,7 +275,7 @@ where
             .data
             .ok_or_else(|| anyhow::anyhow!("no auth data"))?
             .try_into()?;
-        let witness_data = self.view.witness(self.fvk.wallet_id(), &plan).await?;
+        let witness_data = self.view.witness(&plan).await?;
         let tx = plan
             .build_concurrent(&self.fvk, &witness_data, &auth_data)
             .await?;
@@ -410,12 +402,9 @@ where
         market: &DirectedUnitPair,
     ) -> anyhow::Result<Vec<Position>> {
         // We need to use the list of our notes to determine which positions we own.
-        let notes = self
-            .view
-            .unspent_notes_by_address_and_asset(self.fvk.wallet_id())
-            .await?;
+        let notes = self.view.unspent_notes_by_address_and_asset().await?;
 
-        fn is_closed_position_nft(denom: &DenomMetadata) -> bool {
+        fn is_closed_position_nft(denom: &Metadata) -> bool {
             let prefix = "lpnft_closed_".to_string();
 
             denom.starts_with(&prefix)
@@ -476,12 +465,9 @@ where
         market: &DirectedUnitPair,
     ) -> anyhow::Result<Vec<Position>> {
         // We need to use the list of our notes to determine which positions we own.
-        let notes = self
-            .view
-            .unspent_notes_by_address_and_asset(self.fvk.wallet_id())
-            .await?;
+        let notes = self.view.unspent_notes_by_address_and_asset().await?;
 
-        fn is_opened_position_nft(denom: &DenomMetadata) -> bool {
+        fn is_opened_position_nft(denom: &Metadata) -> bool {
             let prefix = "lpnft_opened_".to_string();
 
             denom.starts_with(&prefix)
@@ -659,10 +645,7 @@ where
         // We could do this outside of the loop, but checking here
         // assures we have the latest data, and the in-memory gRPC interface
         // should be fast.
-        let notes = self
-            .view
-            .unspent_notes_by_address_and_asset(self.fvk.wallet_id())
-            .await?;
+        let notes = self.view.unspent_notes_by_address_and_asset().await?;
 
         let (mut reserves_1, mut reserves_2) = (Amount::from(0u32), Amount::from(0u32));
 

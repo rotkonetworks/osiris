@@ -5,16 +5,12 @@ use directories::ProjectDirs;
 use futures::TryStreamExt;
 use penumbra_custody::soft_kms::SoftKms;
 use penumbra_proto::{
-    custody::v1alpha1::{
-        custody_protocol_service_client::CustodyProtocolServiceClient,
-        custody_protocol_service_server::CustodyProtocolServiceServer,
+    custody::v1::{
+        custody_service_client::CustodyServiceClient, custody_service_server::CustodyServiceServer,
     },
-    view::v1alpha1::{
-        view_protocol_service_client::ViewProtocolServiceClient,
-        view_protocol_service_server::ViewProtocolServiceServer,
-    },
+    view::v1::{view_service_client::ViewServiceClient, view_service_server::ViewServiceServer},
 };
-use penumbra_view::{ViewClient, ViewService};
+use penumbra_view::{ViewClient, ViewServer};
 use std::path::PathBuf;
 use url::Url;
 
@@ -102,8 +98,7 @@ impl Serve {
         let wallet =
             Wallet::load(custody_file).context("Failed to load wallet from local custody file")?;
         let soft_kms = SoftKms::new(wallet.spend_key.clone().into());
-        let custody =
-            CustodyProtocolServiceClient::new(CustodyProtocolServiceServer::new(soft_kms));
+        let custody = CustodyServiceClient::new(CustodyServiceServer::new(soft_kms));
 
         let fvk = wallet.spend_key.full_viewing_key().clone();
 
@@ -113,11 +108,12 @@ impl Serve {
         let view_storage =
             penumbra_view::Storage::load_or_initialize(None::<&str>, &fvk, self.node.clone())
                 .await?;
-        let view_service = ViewService::new(view_storage, self.node.clone()).await?;
-        // Now build the view and custody clients, doing gRPC with ourselves
-        let mut view = ViewProtocolServiceClient::new(ViewProtocolServiceServer::new(view_service));
 
-        ViewClient::status_stream(&mut view, fvk.wallet_id())
+        // Now build the view and custody clients, doing gRPC with ourselves
+        let view_server = ViewServer::new(view_storage, self.node.clone()).await?;
+        let mut view = ViewServiceClient::new(ViewServiceServer::new(view_server));
+
+        ViewClient::status_stream(&mut view)
             .await?
             .try_collect::<Vec<_>>()
             .await?;
