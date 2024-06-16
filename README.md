@@ -23,7 +23,7 @@ See [GH29](https://github.com/penumbra-zone/galileo/issues/29) for details.
 ## Running it
 
 ```bash
-RUST_LOG=osiris=debug cargo run --release serve BTC USD ATOM
+RUST_LOG=osiris=debug cargo run --release serve USDT ETH OSMO BTC
 ```
 
 This will monitor the [Binance websockets API](https://developers.binance.com/docs/binance-trading-api/websocket_api) for
@@ -40,6 +40,7 @@ A variety of options are available, including adjusting replication timing, and 
 connect to (the default is the hosted Penumbra default testnet). Use the `--help` option for more details.
 
 ## Re-deploying after a testnet release
+
 During deploy of a new testnet, Osiris will automatically be restarted, but
 it won't be using a new image built from the latest code. Sometimes that's OK,
 but we aim to keep the deployments in sync, so the dependencies match.
@@ -54,6 +55,7 @@ Perform these steps manually after deploying a new testnet:
 Eventually we should automate these steps so they're performed automatically as part of a release.
 
 # Bouncing deployments
+
 Restarting the Osiris service will cause the deployment to pull for a new container image.
 If a newer container image exists in the remote repository (`ghcr.io/penumbra-zone/osiris`),
 that image will be used. You must manually build a new image via the [GHA setup](https://github.com/penumbra-zone/osiris/actions).
