@@ -36,10 +36,8 @@ rand = "0.8"
 reqwest = "0.11"
 indexmap = "1.8"
 chrono = { version = "0.4", features = ["serde"] }
+toml                                   = "0.7"
 tonic = { version = "0.10", features = ["tls-webpki-roots", "tls"] }
 serde = { version = "1", features = ["derive"] }
-# The commit `17ba6f3cedec7f5908e4cc2b3c39f61a778df2ec` from 2023-12-03 broke compilation,
-# so we pin the prior git revision.
-# binance = { git = "https://github.com/wisespace-io/binance-rs.git", rev = "17ba6f3cedec7f5908e4cc2b3c39f61a778df2ec" }
-binance = { git = "https://github.com/wisespace-io/binance-rs.git", rev = "3017e136cc4439c9b6a67fdccb76a7c3a94f8440" }
+binance = { git = "https://github.com/wisespace-io/binance-rs.git", rev = "04a78c9272062a84029a612f3c9e8a5845480a4a" }
 url = "2"

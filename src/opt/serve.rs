@@ -50,7 +50,7 @@ impl Serve {
             .iter()
             .flat_map(|s1| self.symbols.iter().map(move |s2| (s1, s2)))
             .filter(|(s1, s2)| s1 != s2)
-            .map(|(s1, s2)| format!("{}{}", s1, s2))
+            .map(|(s1, s2)| format!("{}{}", s2, s1))
             .collect::<Vec<_>>();
 
         let mut symbols = Vec::new();
@@ -92,11 +92,10 @@ impl Serve {
         });
         std::fs::create_dir_all(&data_dir).context("can create data dir")?;
 
-        let custody_file = data_dir.clone().join("custody.json");
-
         // Build a custody service...
-        let wallet =
-            Wallet::load(custody_file).context("Failed to load wallet from local custody file")?;
+        let pcli_config_file = data_dir.clone().join("config.toml");
+        let wallet = Wallet::load(pcli_config_file)
+            .context("failed to load wallet from local custody file")?;
         let soft_kms = SoftKms::new(wallet.spend_key.clone().into());
         let custody = CustodyServiceClient::new(CustodyServiceServer::new(soft_kms));
 
@@ -105,8 +104,15 @@ impl Serve {
         // Wait to synchronize the chain before doing anything else.
         tracing::info!(%self.node, "starting initial sync: ");
         // Instantiate an in-memory view service.
+        let view_file = data_dir.join("pcli-view.sqlite");
+        let view_filepath = Some(
+            view_file
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Non-UTF8 view path"))?
+                .to_string(),
+        );
         let view_storage =
-            penumbra_view::Storage::load_or_initialize(None::<&str>, &fvk, self.node.clone())
+            penumbra_view::Storage::load_or_initialize(view_filepath, &fvk, self.node.clone())
                 .await?;
 
         // Now build the view and custody clients, doing gRPC with ourselves

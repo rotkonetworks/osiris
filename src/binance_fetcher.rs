@@ -37,6 +37,7 @@ impl BinanceFetcher {
 
     /// Run the fetcher.
     pub async fn run(mut self) -> anyhow::Result<()> {
+        tracing::info!("starting binance fetcher");
         let _fetcher_span = tracing::debug_span!("binance-fetcher").entered();
         let keep_running = AtomicBool::new(true); // Used to control the event loop
         let endpoints = self

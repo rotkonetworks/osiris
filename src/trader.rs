@@ -37,27 +37,32 @@ lazy_static! {
         (
             // ETH priced in terms of BTC
             "ETHBTC".to_string(),
-            DirectedUnitPair::from_str("test_btc:test_eth").unwrap()
+            DirectedUnitPair::from_str("test_eth:test_btc").unwrap()
         ),
         (
-            // ETH priced in terms of USD
-            "ETHUSD".to_string(),
-            DirectedUnitPair::from_str("test_usd:test_eth").unwrap()
+            // ETH priced in terms of USDT
+            "ETHUSDT".to_string(),
+            DirectedUnitPair::from_str("test_eth:test_usd").unwrap()
         ),
         (
             // BTC priced in terms of USD
-            "BTCUSD".to_string(),
-            DirectedUnitPair::from_str("test_usd:test_btc").unwrap()
+            "BTCUSDT".to_string(),
+            DirectedUnitPair::from_str("test_btc:test_usd").unwrap()
         ),
         (
             // ATOM priced in terms of BTC
             "ATOMBTC".to_string(),
-            DirectedUnitPair::from_str("test_btc:test_atom").unwrap()
+            DirectedUnitPair::from_str("test_atom:test_btc").unwrap()
         ),
         (
-            // ATOM priced in terms of USD
-            "ATOMUSD".to_string(),
-            DirectedUnitPair::from_str("test_usd:test_atom").unwrap()
+            // ATOM priced in terms of USDT
+            "ATOMUSDT".to_string(),
+            DirectedUnitPair::from_str("test_atom:test_usd").unwrap()
+        ),
+        (
+            // OSMO priced in terms of USDT
+            "OSMOUSDT".to_string(),
+            DirectedUnitPair::from_str("test_osmo:test_usd").unwrap()
         ),
     ]);
 }
@@ -122,6 +127,7 @@ where
 
     /// Run the trader.
     pub async fn run(mut self) -> anyhow::Result<()> {
+        tracing::info!("starting trader");
         let trader_span = tracing::debug_span!("trader");
         // TODO figure out why this span doesn't display in logs
         let _ = trader_span.enter();
@@ -312,6 +318,13 @@ where
         quote: BookTickerEvent,
         plan: &mut Planner<OsRng>,
     ) -> anyhow::Result<()> {
+        tracing::debug!(
+            ?market,
+            ?reserves_1,
+            ?reserves_2,
+            ?quote,
+            "opening liquidity position"
+        );
         // put up half the available reserves
         // TODO: this isn't quite right as it's half the _remaining_ reserves
         // and there might be multiple positions involving reserves with the same
