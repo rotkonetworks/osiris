@@ -1,5 +1,6 @@
 use anyhow::Context;
 use binance::{api::Binance, config::Config, market::*};
+use camino::Utf8PathBuf;
 use clap::Parser;
 use directories::ProjectDirs;
 use futures::TryStreamExt;
@@ -11,19 +12,23 @@ use penumbra_proto::{
     view::v1::{view_service_client::ViewServiceClient, view_service_server::ViewServiceServer},
 };
 use penumbra_view::{ViewClient, ViewServer};
-use std::path::PathBuf;
 use url::Url;
 
 use crate::{BinanceFetcher, Trader, Wallet};
 
 #[derive(Debug, Clone, Parser)]
+#[clap(
+    name = "osiris",
+    about = "Osiris: An example Penumbra price replication LP bot.",
+    version
+)]
 pub struct Serve {
     /// The transaction fee for each response (paid in upenumbra).
     #[structopt(long, default_value = "0")]
     fee: u64,
-    /// Path to the directory to use to store data [default: platform appdata directory].
-    #[clap(long, short)]
-    data_dir: Option<PathBuf>,
+    /// The home directory used to store configuration and data.
+    #[clap(long, default_value_t = default_home(), env = "PENUMBRA_PCLI_HOME")]
+    home: Utf8PathBuf,
     /// The URL of the pd gRPC endpoint on the remote node.
     #[clap(short, long, default_value = "https://grpc.testnet.penumbra.zone")]
     node: Url,
@@ -83,17 +88,9 @@ impl Serve {
 
         let penumbra_config = tracing::debug_span!("penumbra-config").entered();
         tracing::debug!("importing wallet material");
-        // Look up the path to the view state file per platform, creating the directory if needed
-        let data_dir = self.data_dir.unwrap_or_else(|| {
-            ProjectDirs::from("zone", "penumbra", "pcli")
-                .expect("can access penumbra project dir")
-                .data_dir()
-                .to_owned()
-        });
-        std::fs::create_dir_all(&data_dir).context("can create data dir")?;
 
         // Build a custody service...
-        let pcli_config_file = data_dir.clone().join("config.toml");
+        let pcli_config_file = self.home.join("config.toml");
         let wallet = Wallet::load(pcli_config_file)
             .context("failed to load wallet from local custody file")?;
         let soft_kms = SoftKms::new(wallet.spend_key.clone().into());
@@ -104,13 +101,8 @@ impl Serve {
         // Wait to synchronize the chain before doing anything else.
         tracing::info!(%self.node, "starting initial sync: ");
         // Instantiate an in-memory view service.
-        let view_file = data_dir.join("pcli-view.sqlite");
-        let view_filepath = Some(
-            view_file
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("Non-UTF8 view path"))?
-                .to_string(),
-        );
+        let view_file = self.home.join("pcli-view.sqlite");
+        let view_filepath = Some(view_file.to_string());
         let view_storage =
             penumbra_view::Storage::load_or_initialize(view_filepath, &fvk, self.node.clone())
                 .await?;
@@ -129,8 +121,14 @@ impl Serve {
 
         let trader_config = tracing::debug_span!("trader-config").entered();
         // Instantiate the trader (manages the bot's portfolio based on MPSC messages containing price quotes)
-        let (quotes_sender, trader) =
-            Trader::new(0, fvk, view, custody, symbols.clone(), self.node);
+        let (quotes_sender, trader) = Trader::new(
+            self.source_address,
+            fvk,
+            view,
+            custody,
+            symbols.clone(),
+            self.node,
+        );
         trader_config.exit();
 
         let _binance_span = tracing::debug_span!("binance-fetcher").entered();
@@ -147,4 +145,12 @@ impl Serve {
                 result.unwrap().context("error in trader service"),
         }
     }
+}
+
+fn default_home() -> Utf8PathBuf {
+    let path = ProjectDirs::from("zone", "penumbra", "pcli")
+        .expect("Failed to get platform data dir")
+        .data_dir()
+        .to_path_buf();
+    Utf8PathBuf::from_path_buf(path).expect("Platform default data dir was not UTF-8")
 }

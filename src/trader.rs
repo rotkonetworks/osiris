@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, future, str::FromStr};
 
 use anyhow::Context;
 use binance::model::BookTickerEvent;
-use futures::{StreamExt, TryStreamExt};
+use futures::{FutureExt as _, StreamExt, TryStreamExt};
 use penumbra_asset::asset::Metadata;
 use penumbra_custody::{AuthorizeRequest, CustodyClient};
 use penumbra_dex::{
@@ -18,6 +18,8 @@ use penumbra_proto::core::component::dex::v1::query_service_client::QueryService
 use penumbra_proto::core::component::dex::v1::{
     LiquidityPositionsByPriceRequest, LiquidityPositionsRequest,
 };
+use penumbra_proto::penumbra::view::v1::broadcast_transaction_response::Status as BroadcastStatus;
+use penumbra_transaction::txhash::TransactionId;
 use penumbra_view::{Planner, ViewClient};
 use rand::rngs::OsRng;
 use tokio::sync::watch;
@@ -37,32 +39,32 @@ lazy_static! {
         (
             // ETH priced in terms of BTC
             "ETHBTC".to_string(),
-            DirectedUnitPair::from_str("test_eth:test_btc").unwrap()
+            DirectedUnitPair::from_str("test_btc:test_eth").unwrap()
         ),
         (
             // ETH priced in terms of USDT
             "ETHUSDT".to_string(),
-            DirectedUnitPair::from_str("test_eth:test_usd").unwrap()
+            DirectedUnitPair::from_str("test_usd:test_eth").unwrap()
         ),
         (
             // BTC priced in terms of USD
             "BTCUSDT".to_string(),
-            DirectedUnitPair::from_str("test_btc:test_usd").unwrap()
+            DirectedUnitPair::from_str("test_usd:test_btc").unwrap()
         ),
         (
             // ATOM priced in terms of BTC
             "ATOMBTC".to_string(),
-            DirectedUnitPair::from_str("test_atom:test_btc").unwrap()
+            DirectedUnitPair::from_str("test_btc:test_atom").unwrap()
         ),
         (
             // ATOM priced in terms of USDT
             "ATOMUSDT".to_string(),
-            DirectedUnitPair::from_str("test_atom:test_usd").unwrap()
+            DirectedUnitPair::from_str("test_usd:test_atom").unwrap()
         ),
         (
             // OSMO priced in terms of USDT
             "OSMOUSDT".to_string(),
-            DirectedUnitPair::from_str("test_osmo:test_usd").unwrap()
+            DirectedUnitPair::from_str("test_usd:test_osmo").unwrap()
         ),
     ]);
 }
@@ -79,7 +81,7 @@ where
     view: V,
     custody: C,
     fvk: FullViewingKey,
-    account: u32,
+    account: AddressIndex,
     pd_url: Url,
 }
 
@@ -90,7 +92,7 @@ where
 {
     /// Create a new trader.
     pub fn new(
-        account: u32,
+        account: AddressIndex,
         fvk: FullViewingKey,
         view: V,
         custody: C,
@@ -129,15 +131,11 @@ where
     pub async fn run(mut self) -> anyhow::Result<()> {
         tracing::info!("starting trader");
         let trader_span = tracing::debug_span!("trader");
-        // TODO figure out why this span doesn't display in logs
         let _ = trader_span.enter();
         tracing::debug!("running trader functionality");
-        // Doing this loop without any shutdown signal doesn't exactly
+        // TODO: Doing this loop without any shutdown signal doesn't exactly
         // provide a clean shutdown, but it works for now.
         loop {
-            // TODO: ensure we have some positions from `penumbra` to create a more interesting
-            // trading environment :)
-
             // Check each pair
             let mut actions = self.actions.clone();
             for (symbol, rx) in actions.iter_mut() {
@@ -173,8 +171,6 @@ where
                         .expect("missing symbol -> DirectedUnitPair mapping");
 
                     // Create a plan that will contain all LP management operations based on this quote.
-                    // TODO: could move this outside the loop, but it's a little easier to debug
-                    // the plans like this for now
                     let plan = &mut Planner::new(OsRng);
 
                     // Find the spendable balance for each asset in the market.
@@ -222,9 +218,6 @@ where
                         plan,
                     )
                     .await?;
-
-                    // TODO: it's possible to immediately close this position within the same block
-                    // however what if we don't get updates every block?
 
                     // Finalize and submit the transaction plan.
                     match self.finalize_and_submit(plan).await {
@@ -287,7 +280,50 @@ where
             .await?;
 
         // 3. Broadcast the transaction and wait for confirmation.
-        self.view.broadcast_transaction(tx, true).await?;
+        let mut rsp = self.view.broadcast_transaction(tx, true).await?;
+        let id: TransactionId = async move {
+            while let Some(rsp) = rsp.try_next().await? {
+                match rsp.status {
+                    Some(status) => match status {
+                        BroadcastStatus::BroadcastSuccess(bs) => {
+                            tracing::debug!(
+                                "transaction broadcast successfully: {}",
+                                TransactionId::try_from(
+                                    bs.id.expect("detected transaction missing id")
+                                )?
+                            );
+                        }
+                        BroadcastStatus::Confirmed(c) => {
+                            let id = c.id.expect("detected transaction missing id").try_into()?;
+                            if c.detection_height != 0 {
+                                tracing::debug!(
+                                    "transaction confirmed and detected: {} @ height {}",
+                                    id,
+                                    c.detection_height
+                                );
+                            } else {
+                                tracing::debug!("transaction confirmed and detected: {}", id);
+                            }
+                            return Ok(id);
+                        }
+                    },
+                    None => {
+                        // No status is unexpected behavior
+                        return Err(anyhow::anyhow!(
+                            "empty BroadcastTransactionResponse message"
+                        ));
+                    }
+                }
+            }
+
+            Err(anyhow::anyhow!(
+                "should have received BroadcastTransaction status or error"
+            ))
+        }
+        .boxed()
+        .await
+        .context("error broadcasting transaction")?;
+        tracing::debug!(transaction_id = ?id, "broadcasted transaction");
 
         Ok(())
     }
@@ -378,9 +414,9 @@ where
             market.into_directed_trading_pair(),
             spread as u32,
             // p is always the scaling value
-            (scaling_factor as u128 * denom_scaler).into(),
+            (scaling_factor as u128 * denom_scaler / 1_000).into(),
             // price is expressed in units of asset 2
-            (mid_price as u128 * numer_scaler).into(),
+            (mid_price as u128 * numer_scaler / 1_000).into(),
             reserves,
         );
 

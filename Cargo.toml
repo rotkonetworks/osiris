@@ -22,13 +22,14 @@ penumbra-transaction = { path = "../penumbra/crates/core/transaction", features 
 
 # External dependencies
 anyhow = "1"
+camino                           = { version = "1" }
 directories = "4.0.1"
 lazy_static = "1.4.0"
 regex = "1"
 tracing = "0.1"
 tracing-subscriber = "0.2"
 tokio = { version = "1.25", features = ["full"] }
-clap = { version = "3", features = ["derive"] }
+clap = { version = "3", features = ["derive", "env"] }
 serde_json = "1"
 futures = "0.3"
 derivative = "2"
