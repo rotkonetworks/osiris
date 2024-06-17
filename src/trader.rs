@@ -231,7 +231,9 @@ where
                                 ?plan,
                                 "failed to update position"
                             );
-                            return Err(e);
+                            // Don't return the error here, just log it
+                            // and keep looping
+                            continue;
                         }
                     };
 
