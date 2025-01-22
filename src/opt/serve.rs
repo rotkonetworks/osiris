@@ -30,7 +30,7 @@ pub struct Serve {
     #[clap(long, default_value_t = default_home(), env = "PENUMBRA_PCLI_HOME")]
     home: Utf8PathBuf,
     /// The URL of the pd gRPC endpoint on the remote node.
-    #[clap(short, long, default_value = "https://grpc.testnet.penumbra.zone")]
+    #[clap(short, long, default_value = "https://grpc.penumbra.silentvalidator.com/")]
     node: Url,
     /// The source address index in the wallet to use when dispensing tokens (if unspecified uses
     /// any funds available).
@@ -49,7 +49,6 @@ pub struct Serve {
 impl Serve {
     pub async fn exec(self) -> anyhow::Result<()> {
         // Create all permutations between symbols and find the canonical ones
-        // (i.e. the Binance API only knows about ETHBTC, not BTCETH).
         let permutations = self
             .symbols
             .iter()
@@ -58,9 +57,7 @@ impl Serve {
             .map(|(s1, s2)| format!("{}{}", s2, s1))
             .collect::<Vec<_>>();
 
-        let mut symbols = Vec::new();
-
-        // the binance-rs library really hates trailing slashes here
+        // Configure binance endpoints
         let mut binance_rest = String::from(self.binance_rest);
         if binance_rest.ends_with('/') {
             binance_rest.pop();
@@ -69,21 +66,38 @@ impl Serve {
         if binance_ws.ends_with('/') {
             binance_ws.pop();
         }
+
         let binance_config = Config {
-            rest_api_endpoint: binance_rest,
+            rest_api_endpoint: binance_rest.clone(),
             ws_endpoint: binance_ws,
             ..Default::default()
         };
 
-        let market: Market = Binance::new_with_config(None, None, &binance_config);
+        // Move the blocking market operations to a spawn_blocking task
+        let symbols = {
+            let permutations = permutations.clone();
+            let config = binance_config.clone();
+            tokio::task::spawn_blocking(move || {
+                let market: Market = Binance::new_with_config(None, None, &config);
+                permutations
+                    .into_iter()
+                    .filter_map(|permutation| {
+                        match market.get_price(permutation.clone()) {
+                            Ok(_) => {
+                                tracing::trace!("Valid symbol: {}", permutation);
+                                Some(permutation)
+                            }
+                            Err(_) => {
+                                tracing::trace!("Invalid symbol: {}", permutation);
+                                None
+                            }
+                        }
+                    })
+                .collect::<Vec<String>>()
+            })
+            .await?
+        };
 
-        // Find the permutations that Binance knows about.
-        for permutation in permutations {
-            match market.get_price(permutation.clone()) {
-                Ok(_) => symbols.push(permutation.clone()),
-                Err(_) => tracing::trace!("Invalid symbol: {}", permutation),
-            }
-        }
         tracing::debug!(?symbols, "found valid trading symbols in Binance API");
 
         let penumbra_config = tracing::debug_span!("penumbra-config").entered();

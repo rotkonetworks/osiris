@@ -1,23 +1,18 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
-
+use tokio::time::{sleep, Duration};
+use std::sync::Arc;
 use binance::model::BookTickerEvent;
 use tokio::sync::watch::Sender;
-
 use binance::config::Config;
-use binance::websockets::WebSockets;
-use binance::websockets::WebsocketEvent;
+use binance::websockets::{WebSockets, WebsocketEvent};
+use parking_lot::RwLock;
 
-/// The `Trader` maps `(DirectedTradingPair, Amount)` position requests to [`position::Id`] identifiers of opened positions.
 #[derive(Debug)]
 pub struct BinanceFetcher {
-    /// Sends quotes to the trader.
     txs: BTreeMap<String, Sender<Option<BookTickerEvent>>>,
-    /// Keep track of last-sent prices to avoid spamming the trader.
     last_sent: BTreeMap<String, BookTickerEvent>,
-    /// The symbols we are fetching.
     symbols: Vec<String>,
-    /// The configuration for the Binance API client
     binance_config: Config,
 }
 
@@ -35,40 +30,90 @@ impl BinanceFetcher {
         }
     }
 
-    /// Run the fetcher.
-    pub async fn run(mut self) -> anyhow::Result<()> {
+    pub async fn run(self) -> anyhow::Result<()> {
         tracing::info!("starting binance fetcher");
-        let _fetcher_span = tracing::debug_span!("binance-fetcher").entered();
-        let keep_running = AtomicBool::new(true); // Used to control the event loop
+        let keep_running = Arc::new(AtomicBool::new(true));
         let endpoints = self
             .symbols
             .iter()
             .map(|symbol| format!("{}@bookTicker", symbol.to_lowercase()))
             .collect::<Vec<_>>();
 
-        let mut web_socket = WebSockets::new(|event: WebsocketEvent| {
+        let max_retries = 5;
+        let mut retry_count = 0;
+        let mut backoff_duration = Duration::from_secs(1);
+
+        while keep_running.load(std::sync::atomic::Ordering::Relaxed) {
+            match self.connect_and_stream(&endpoints, Arc::clone(&keep_running)).await {
+                Ok(_) => {
+                    retry_count = 0;
+                    backoff_duration = Duration::from_secs(1);
+                }
+                Err(e) => {
+                    retry_count += 1;
+                    if retry_count >= max_retries {
+                        tracing::error!(?e, "max retries exceeded, shutting down fetcher");
+                        return Err(e);
+                    }
+                    tracing::warn!(
+                        ?e,
+                        ?retry_count,
+                        ?backoff_duration,
+                        "websocket error, attempting reconnect"
+                    );
+                    sleep(backoff_duration).await;
+                    backoff_duration = std::cmp::min(backoff_duration * 2, Duration::from_secs(32));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn connect_and_stream(
+        &self,
+        endpoints: &[String],
+        keep_running: Arc<AtomicBool>,
+    ) -> anyhow::Result<()> {
+        struct CallbackState {
+            last_sent: Arc<RwLock<BTreeMap<String, BookTickerEvent>>>,
+            txs: Arc<BTreeMap<String, Sender<Option<BookTickerEvent>>>>,
+        }
+
+        unsafe impl Send for CallbackState {}
+        unsafe impl Sync for CallbackState {}
+
+        let state = Arc::new(CallbackState {
+            last_sent: Arc::new(RwLock::new(self.last_sent.clone())),
+            txs: Arc::new(self.txs.clone()),
+        });
+
+        let state_clone = Arc::clone(&state);
+
+        let callback = Box::new(move |event| {
+            let state = &state_clone;
             if let WebsocketEvent::BookTicker(book_ticker_event) = event {
-                // Check if this quote has already been sent or not.
-                let last_sent_quote = self.last_sent.get(&book_ticker_event.symbol);
+                let mut last_sent = state.last_sent.write();
+                let last_sent_quote = last_sent.get(&book_ticker_event.symbol);
+
                 if last_sent_quote.is_none()
                     || (last_sent_quote.is_some()
-                    && last_sent_quote.unwrap().update_id < book_ticker_event.update_id &&
-                    // we actually only care to update if the price has changed
-                    (last_sent_quote.unwrap().best_bid != book_ticker_event.best_bid ||
-                    last_sent_quote.unwrap().best_ask != book_ticker_event.best_ask))
+                        && last_sent_quote.unwrap().update_id < book_ticker_event.update_id
+                        && (last_sent_quote.unwrap().best_bid != book_ticker_event.best_bid
+                            || last_sent_quote.unwrap().best_ask != book_ticker_event.best_ask))
                 {
                     tracing::debug!(?book_ticker_event, ?last_sent_quote, "received new quote");
-                    self.txs
-                        .get(&book_ticker_event.symbol)
-                        .expect("missing sender for symbol")
-                        .send(Some(book_ticker_event.clone()))
-                        .expect("error sending price quote");
-                    self.last_sent
-                        .insert(book_ticker_event.symbol.clone(), book_ticker_event);
+                    if let Some(tx) = state.txs.get(&book_ticker_event.symbol) {
+                        if let Err(e) = tx.send(Some(book_ticker_event.clone())) {
+                            tracing::error!("Failed to send price quote: {}", e);
+                        }
+                    }
+                    last_sent.insert(book_ticker_event.symbol.clone(), book_ticker_event);
                 }
-            };
+            }
             Ok(())
-        });
+        }) as Box<dyn FnMut(WebsocketEvent) -> Result<(), binance::errors::Error> + Send>;
+
+        let mut web_socket = WebSockets::new(callback);
 
         tracing::debug!(?endpoints, "connecting to Binance websocket API");
         web_socket
@@ -78,16 +123,10 @@ impl BinanceFetcher {
             )
             .map_err(|e| anyhow::anyhow!("failed to connect to binance websocket service: {e}"))?;
 
-        tracing::debug!("maintaining open websocket connection to Binance API");
-        if let Err(e) = web_socket.event_loop(&keep_running) {
-            tracing::error!(?e, "error in web socket event loop");
-            anyhow::bail!(format!("Failed in web socket loop, exiting"));
-        }
+        web_socket
+            .event_loop(&keep_running)
+            .map_err(|e| anyhow::anyhow!("WebSocket event loop error: {}", e))?;
 
-        tracing::debug!("closing websocket connection to Binance");
-        web_socket.disconnect().map_err(|e| {
-            anyhow::anyhow!("failed to disconnect from binance websocket service: {e}")
-        })?;
         Ok(())
     }
 }

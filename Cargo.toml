@@ -23,22 +23,23 @@ penumbra-transaction = { path = "../penumbra/crates/core/transaction", features 
 # External dependencies
 anyhow = "1"
 camino                           = { version = "1" }
-directories = "4.0.1"
+directories = "6.0.0"
 lazy_static = "1.4.0"
 regex = "1"
 tracing = "0.1"
-tracing-subscriber = "0.2"
+tracing-subscriber = "0.3"
 tokio = { version = "1.25", features = ["full"] }
-clap = { version = "3", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive", "env"] }
 serde_json = "1"
 futures = "0.3"
 derivative = "2"
 rand = "0.8"
-reqwest = "0.11"
-indexmap = "1.8"
+reqwest = "0.12"
+indexmap = "2.7"
 chrono = { version = "0.4", features = ["serde"] }
-toml                                   = "0.7"
-tonic = { version = "0.10", features = ["tls-webpki-roots", "tls"] }
+toml = "0.8"
+tonic = { version = "=0.10", features = ["tls-webpki-roots", "tls"] }
 serde = { version = "1", features = ["derive"] }
-binance = { git = "https://github.com/wisespace-io/binance-rs.git", rev = "04a78c9272062a84029a612f3c9e8a5845480a4a" }
+binance = { git = "https://github.com/wisespace-io/binance-rs.git", rev = "fe58a927c8bae4840a55656313c4534d3a024dff" }
 url = "2"
+parking_lot = "0.12"
